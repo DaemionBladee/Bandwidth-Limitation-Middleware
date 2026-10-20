@@ -1,0 +1,23 @@
+[project]
+name = "bandwidth-engine"
+version = "0.1.0"
+description = "Durable quota decisions, accounting, and Cisco ISE reconciliation"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "sqlalchemy>=2.0.38,<3",
+  "psycopg[binary]>=3.2,<4", "alembic>=1.14,<2", "pydantic-settings>=2.8,<3",
+  "httpx>=0.28,<1", "tzdata>=2025.1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3,<10", "ruff>=0.11,<1", "playwright>=1.50,<2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]

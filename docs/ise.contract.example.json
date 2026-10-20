@@ -1,0 +1,26 @@
+{
+  "version": "REPLACE_WITH_INSPECTED_EXACT_VERSION",
+  "version_path": "/REPLACE_WITH_VERIFIED_VERSION_ENDPOINT",
+  "version_field": "REPLACE_WITH_VERSION_JSON_FIELD",
+  "capabilities_verified": false,
+  "profile_mapping_verified": false,
+  "session_confirmation_verified": false,
+  "profiles": [
+    {"mode": "NORMAL", "download_kbps": 20000, "upload_kbps": 10000, "profile": "REPLACE_WITH_EXISTING_NORMAL_PROFILE"},
+    {"mode": "LIMITED", "download_kbps": 2000, "upload_kbps": 1000, "profile": "REPLACE_WITH_EXISTING_LIMITED_PROFILE"}
+  ],
+  "update": {
+    "method": "PUT", "path": "/REPLACE_WITH_VERIFIED_UPDATE_ENDPOINT/{username}",
+    "payload": {"REPLACE_WITH_VERIFIED_SCHEMA": "{profile}"}, "success_codes": [200, 204]
+  },
+  "reauthorization_required": true,
+  "reauthorize": {
+    "method": "POST", "path": "/REPLACE_WITH_VERIFIED_REAUTH_ENDPOINT",
+    "payload": {"REPLACE_WITH_VERIFIED_SCHEMA": "{username}"}, "success_codes": [200, 202, 204]
+  },
+  "confirmation_path": "/REPLACE_WITH_VERIFIED_ACTIVE_SESSION_ENDPOINT/{username}",
+  "confirmation_profile_field": "REPLACE_WITH_ACTUAL_APPLIED_PROFILE_FIELD",
+  "confirmation_username_field": "REPLACE_WITH_IDENTITY_FIELD",
+  "confirmation_session_field": "REPLACE_WITH_SESSION_ID_FIELD",
+  "confirmation_active_field": "REPLACE_WITH_ACTIVE_BOOLEAN_FIELD"
+}

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bandwidth Engine · Network operations</title><link rel="icon" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/styles.css"><script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div id="login-view" class="login-wrap">
+    <form id="login-form" class="login-card">
+      <div class="brand-icon">B</div><p class="eyebrow">NETWORK OPERATIONS</p>
+      <h1>Bandwidth Engine</h1><p class="muted">Sign in to manage subscriber policies and quota enforcement.</p>
+      <label>Admin username<input name="username" autocomplete="username" required autofocus></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="primary" type="submit">Sign in <span>→</span></button>
+      <p id="login-error" class="error" role="alert"></p>
+      <small>Provision an admin with <code>python -m bandwidth.cli bootstrap</code>.</small>
+    </form>
+  </div>
+  <div id="app-view" hidden>
+    <aside class="sidebar">
+      <a href="/" class="brand"><span class="brand-icon">B</span><span>Bandwidth<span class="brand-sub">ENGINE / CONTROL PLANE</span></span></a>
+      <div class="nav-label">WORKSPACE</div>
+      <nav aria-label="Main navigation">
+        <button class="nav-item active" data-tab="overview"><span>◈</span> Overview</button>
+        <button class="nav-item" data-tab="policies"><span>≡</span> Policy library</button>
+        <button class="nav-item" data-tab="audit"><span>↺</span> Change history</button>
+      </nav>
+      <div class="sidebar-bottom"><span class="status-dot"></span> PostgreSQL storage<p id="admin-name">Admin workspace</p><button id="logout" class="link-button">Sign out ↗</button></div>
+    </aside>
+    <main>
+      <header class="topbar"><span>Workspace <span class="slash">/</span> <strong id="breadcrumb">Overview</strong></span><span id="clock" class="muted"></span></header>
+      <div class="content">
+        <div class="page-heading"><div><p class="eyebrow">BANDWIDTH ENGINE</p><h1 id="page-title">Network overview</h1><p id="page-description" class="muted">Usage, policy decisions, and enforcement in one place.</p></div><div class="actions"><button id="refresh" class="secondary">↻ Refresh</button><button class="primary" id="new-policy">＋ New policy</button></div></div>
+        <div id="integration-banner" class="notice"><span class="notice-icon">◉</span><div><strong id="integration-title">Checking integrations</strong><p id="integration-description"></p></div><span id="source-badge" class="badge"></span></div>
+        <p id="app-error" class="error" role="alert"></p>
+        <section id="overview-tab">
+          <div class="stat-grid">
+            <article class="stat"><p>Assigned subscribers <span>↗</span></p><strong id="stat-users">0</strong><small>with a current policy</small></article>
+            <article class="stat"><p>Combined usage <span>⇅</span></p><strong id="stat-usage">0 GB</strong><small>across current quota periods</small></article>
+            <article class="stat"><p>Limited mode <span>↓</span></p><strong id="stat-limited">0</strong><small>subscribers at or above quota</small></article>
+            <article class="stat"><p>Awaiting enforcement <span>◷</span></p><strong id="stat-pending">0</strong><small>pending or failed reconciliation</small></article>
+          </div>
+          <section class="panel"><div class="panel-heading"><div><h2>Subscribers</h2><p class="muted">Combined upload + download determines quota usage.</p></div><button id="new-user" class="secondary">＋ Add subscriber</button></div>
+            <div class="table-scroll"><table><thead><tr><th>Subscriber / Policy</th><th>Period usage</th><th>Requested mode</th><th>ISE status</th><th>Next boundary</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody id="users-table"></tbody></table></div>
+            <div id="users-empty" class="empty" hidden>No subscribers yet. Add a subscriber and assign a policy to begin.</div>
+          </section>
+          <div class="lower-grid"><section class="panel"><div class="panel-heading"><h2>Worker activity</h2><span class="badge neutral">DURABLE QUEUE</span></div><div id="jobs" class="job-list"></div></section><section class="panel"><div class="panel-heading"><h2>Accounting input</h2><span id="accounting-mode" class="badge neutral"></span></div><div class="panel-body"><p class="muted">Counters are normalized to bytes. Each source record has a unique ID; duplicate records do not increase usage.</p><p id="checkpoint" class="small"></p><button id="mock-usage" class="secondary">＋ Submit mock usage</button><p id="worker-errors" class="error small"></p></div></section></div>
+        </section>
+        <section id="policies-tab" hidden><div id="policy-grid" class="policy-grid"></div></section>
+        <section id="audit-tab" class="panel" hidden><div class="panel-heading"><h2>Admin change history</h2><span class="badge neutral">LATEST 100</span></div><div class="table-scroll"><table><thead><tr><th>Time</th><th>Admin</th><th>Action</th><th>Entity</th><th>Details</th></tr></thead><tbody id="audit-table"></tbody></table></div></section>
+        <footer>Bandwidth Engine <span>·</span> All usage in decimal GB <span>·</span> Calendar boundaries use each policy’s timezone</footer>
+      </div>
+    </main>
+  </div>
+  <dialog id="policy-dialog"><form id="policy-form"><div class="dialog-heading"><div><p class="eyebrow">POLICY CONFIGURATION</p><h2 id="policy-dialog-title">Create policy</h2></div><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div>
+    <input name="id" type="hidden"><input name="revision" type="hidden">
+    <div class="form-grid"><label class="full">Policy name<input name="name" required maxlength="120" placeholder="e.g. Standard monthly"></label>
+      <label>Quota (GB, decimal)<input name="quota_gb" type="number" min="0.000000001" max="9000000" step="any" required value="50"></label><label>Timezone<input name="timezone" required value="UTC" placeholder="Asia/Yangon"></label>
+      <div class="form-section full">Speed profiles <small>Mbps · download / upload</small></div>
+      <label>Normal download<input name="normal_download" type="number" min="0.001" step="0.001" value="20" required></label><label>Normal upload<input name="normal_upload" type="number" min="0.001" step="0.001" value="10" required></label>
+      <label>Limited download<input name="limited_download" type="number" min="0.001" step="0.001" value="2" required></label><label>Limited upload<input name="limited_upload" type="number" min="0.001" step="0.001" value="1" required></label>
+      <div class="form-section full">Reset schedule</div>
+      <label>Period<select name="period_type" aria-label="Period"><option value="monthly">Monthly</option><option value="weekly">Weekly</option><option value="daily">Daily</option><option value="custom">Custom interval</option></select></label>
+      <label data-calendar>Local reset time<input name="reset_time" type="time" value="00:00"></label>
+      <label id="monthly-field">Day of month<input name="monthly_day" type="number" min="1" max="31" value="1"><small>Days absent from a month use its last day.</small></label>
+      <label id="weekly-field" hidden>Day of week<select name="weekly_day"><option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option><option value="3">Thursday</option><option value="4">Friday</option><option value="5">Saturday</option><option value="6">Sunday</option></select></label>
+      <label data-custom hidden>Start (with UTC offset)<input name="custom_start" placeholder="2026-11-01T00:00:00+06:30"></label>
+      <label data-custom hidden>End (with UTC offset)<input name="custom_end" placeholder="2026-11-02T00:00:00+06:30"></label>
+      <label data-custom hidden>Repeat every (seconds, optional)<input name="repeat_interval_seconds" type="number" min="1" placeholder="86400"></label>
+      <label data-custom hidden>Expiry / gap action<select name="expiry_action"><option value="">Choose explicitly</option><option value="NORMAL">NORMAL</option><option value="LIMITED">LIMITED</option></select></label>
+      <label class="full">Apply changes<select name="application"><option value="immediate">Immediately (re-evaluate recorded usage)</option><option value="next_period">At each subscriber’s next period boundary</option></select></label>
+      <label class="checkbox-label full"><input name="enabled" type="checkbox" checked> Policy enabled</label>
+    </div><p class="error form-error" role="alert"></p><div class="dialog-footer"><button type="button" class="secondary close-dialog">Cancel</button><button type="submit" class="primary">Save policy</button></div>
+  </form></dialog>
+  <dialog id="user-dialog"><form id="user-form"><div class="dialog-heading"><h2>Add subscriber</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div><label>Accounting username<input name="username" required maxlength="200" placeholder="subscriber@example.com"></label><p class="muted small">Must match the accounting source’s user identity exactly.</p><p class="error form-error" role="alert"></p><div class="dialog-footer"><button type="submit" class="primary">Create subscriber</button></div></form></dialog>
+  <dialog id="assignment-dialog"><form id="assignment-form"><div class="dialog-heading"><h2>Assign policy</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div><input name="user_id" type="hidden"><p id="assignment-user" class="muted"></p><label>Policy<select name="policy_id" aria-label="Policy" required></select></label><label>Apply<select name="application"><option value="immediate">Immediately</option><option value="next_period">Next period boundary</option></select></label><label class="checkbox-label"><input name="enabled" type="checkbox" checked> Assignment enabled</label><p class="muted small">Disabling an assignment requests its NORMAL profile.</p><p class="error form-error" role="alert"></p><div class="dialog-footer"><button type="submit" class="primary">Save assignment</button></div></form></dialog>
+  <dialog id="usage-dialog"><form id="usage-form"><div class="dialog-heading"><h2>Submit mock accounting</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div><p class="notice compact">Local simulation only. This does not represent live network usage.</p><label>Subscriber<select name="username" aria-label="Subscriber" required></select></label><label>Record ID<input name="record_id" required></label><label>Session ID<input name="session_id" required value="dashboard-demo"></label><div class="form-grid"><label>Upload (GB)<input name="upload" type="number" min="0" step="0.001" value="1" required></label><label>Download (GB)<input name="download" type="number" min="0" step="0.001" value="4" required></label></div><p class="muted small">Submits a delta measurement at the current time. Reusing the same record with the same data is idempotent through the API.</p><p class="error form-error" role="alert"></p><div class="dialog-footer"><button type="submit" class="primary">Queue mock usage</button></div></form></dialog>
+  <dialog id="history-dialog" class="wide-dialog"><div class="dialog-heading"><div><p class="eyebrow">SUBSCRIBER HISTORY</p><h2 id="history-title"></h2></div><button class="icon-button close-dialog" aria-label="Close">×</button></div><div id="history-content"></div></dialog>
+  <div id="toast" role="status" hidden></div>
+</body>
+</html>
