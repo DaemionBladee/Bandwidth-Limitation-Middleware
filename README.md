@@ -2,6 +2,8 @@
 
 Quota middleware with a FastAPI admin API, responsive dashboard, PostgreSQL accounting ledger, durable background jobs, and a deployment-gated Cisco ISE adapter. Python 3.12+, PostgreSQL 16+, [uv](https://docs.astral.sh/uv/), and Docker Compose are required for the local workflow. No framework, migrations, authentication, accounting source, or ISE configuration existed in the initial repository.
 
+Read the **[website feature and administrator guide](docs/website-guide.md)** for a page-by-page tour, default-plan onboarding, subscriber tasks, administrator creation, configuration locations, a demo walkthrough, and current integration boundaries. Technical references: [API](docs/api.md) · [Cisco ISE integration](docs/ise.md).
+
 ## Run locally
 
 Run from the existing checkout (each cloud task is already isolated; no worktree is necessary):
