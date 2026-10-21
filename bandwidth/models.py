@@ -78,6 +78,23 @@ class Period(Base):
         return self.upload_bytes + self.download_bytes
 
 
+class UsageReset(Base):
+    __tablename__ = "usage_resets"
+    __table_args__ = (
+        UniqueConstraint("user_id", "request_id"),
+        UniqueConstraint("user_id", "effective_at"),
+        Index("ix_usage_reset_boundary", "user_id", "effective_at"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    previous_period_id: Mapped[int] = mapped_column(ForeignKey("quota_periods.id"))
+    new_period_id: Mapped[int | None] = mapped_column(ForeignKey("quota_periods.id"))
+    request_id: Mapped[str] = mapped_column(String(36))
+    effective_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    actor: Mapped[str] = mapped_column(String(200))
+    reason: Mapped[str] = mapped_column(String(300))
+
+
 class AccountingRecord(Base):
     __tablename__ = "accounting_records"
     __table_args__ = (

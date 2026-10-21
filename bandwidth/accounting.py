@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from bandwidth.config import settings
 from bandwidth.db import utcnow
-from bandwidth.engine import assignment_window, effective_assignment, ensure_period, evaluate, lock_user
+from bandwidth.engine import effective_assignment, ensure_period, evaluate, lock_user, quota_window
 from bandwidth.models import AccountingRecord, Checkpoint, Inbox, Period, PolicyVersion, User
 from bandwidth.schemas import Measurement, PolicySpec
 
@@ -187,7 +187,9 @@ def ingest_record(db, source, measurement: Measurement, now=None):
             db,
             user.id,
             version,
-            assignment_window(PolicySpec.model_validate(version.spec), assignment, measurement.observed_at),
+            quota_window(
+                db, user.id, PolicySpec.model_validate(version.spec), assignment, measurement.observed_at
+            ),
         )
     evaluate(db, user.id, now)
     return True

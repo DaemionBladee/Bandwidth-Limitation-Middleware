@@ -9,8 +9,17 @@ from sqlalchemy.exc import IntegrityError
 
 from bandwidth.auth import COOKIE, digest, login, require_admin
 from bandwidth.config import settings
+from bandwidth.dashboard import TIMEZONES, dashboard_snapshot, event_response
 from bandwidth.db import transaction, utcnow
-from bandwidth.engine import assign, assignment_window, effective_assignment, evaluate, lock_user
+from bandwidth.engine import (
+    UsageResetConflict,
+    assign,
+    effective_assignment,
+    evaluate,
+    lock_user,
+    quota_window,
+    reset_usage,
+)
 from bandwidth.models import (
     AdminSession,
     Assignment,
@@ -23,10 +32,18 @@ from bandwidth.models import (
     Period,
     Policy,
     PolicyVersion,
+    UsageReset,
     User,
 )
 from bandwidth.queue import enqueue
-from bandwidth.schemas import AssignmentInput, Measurement, PolicyEdit, PolicySpec, UserCreate
+from bandwidth.schemas import (
+    AssignmentInput,
+    Measurement,
+    PolicyEdit,
+    PolicySpec,
+    ResetUsageInput,
+    UserCreate,
+)
 
 app = FastAPI(title="Bandwidth Engine", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None)
 static = Path(__file__).parent / "static"
@@ -57,6 +74,11 @@ async def conflict(request, exc):
 @app.exception_handler(ValueError)
 async def invalid(request, exc):
     return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+@app.exception_handler(UsageResetConflict)
+async def stale_reset(request, exc):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
 @app.get("/")
@@ -97,6 +119,21 @@ def session_info(request: Request, actor=AdminOnly):
         return {"username": actor, "csrf": session.csrf if session else None}
 
 
+@app.get("/api/timezones")
+def timezones(actor=AdminOnly):
+    return TIMEZONES
+
+
+@app.get("/api/dashboard")
+def dashboard_data(timezone: str = "UTC", actor=AdminOnly):
+    return dashboard_snapshot(timezone, utcnow())
+
+
+@app.get("/api/events")
+async def live_events(request: Request, timezone: str = "UTC", actor=AdminOnly):
+    return await event_response(request, timezone)
+
+
 @app.post("/api/logout")
 def sign_out(request: Request, response: Response, actor=AdminOnly):
     with transaction() as db:
@@ -123,13 +160,17 @@ def latest_version(db, policy_id):
     return row
 
 
+def policy_views(db):
+    return [
+        {"id": row.id, "revision": (version := latest_version(db, row.id)).revision, "spec": version.spec}
+        for row in db.scalars(select(Policy).order_by(Policy.id))
+    ]
+
+
 @app.get("/api/policies")
 def policies(actor=AdminOnly):
     with transaction() as db:
-        return [
-            {"id": row.id, "revision": (version := latest_version(db, row.id)).revision, "spec": version.spec}
-            for row in db.scalars(select(Policy).order_by(Policy.id))
-        ]
+        return policy_views(db)
 
 
 @app.post("/api/policies", status_code=201)
@@ -219,7 +260,7 @@ def user_view(db, user, now):
     assignment = effective_assignment(db, user.id, now)
     version = db.get(PolicyVersion, assignment.version_id) if assignment else None
     spec = PolicySpec.model_validate(version.spec) if version else None
-    bounds = assignment_window(spec, assignment, now) if spec else None
+    bounds = quota_window(db, user.id, spec, assignment, now) if spec else None
     period = (
         db.scalar(
             select(Period).where(
@@ -249,6 +290,9 @@ def user_view(db, user, now):
         "revision": version.revision if version else None,
         "enabled": assignment.enabled and spec.enabled if assignment else False,
         "used_bytes": used,
+        "period_id": period.id if period else None,
+        "period_starts_at": period.starts_at if period else None,
+        "period_ends_at": period.ends_at if period else None,
         "upload_bytes": period.upload_bytes if period else 0,
         "download_bytes": period.download_bytes if period else 0,
         "quota_bytes": spec.quota_bytes if spec else None,
@@ -282,7 +326,25 @@ def users(actor=AdminOnly):
 @app.get("/api/users/{user_id}/history")
 def history(user_id: int, actor=AdminOnly):
     with transaction() as db:
+        if not db.get(User, user_id):
+            raise HTTPException(404, "Subscriber not found")
         return {
+            "resets": [
+                {
+                    "id": r.id,
+                    "effective_at": r.effective_at,
+                    "actor": r.actor,
+                    "reason": r.reason,
+                    "previous_period_id": r.previous_period_id,
+                    "new_period_id": r.new_period_id,
+                }
+                for r in db.scalars(
+                    select(UsageReset)
+                    .where(UsageReset.user_id == user_id)
+                    .order_by(UsageReset.effective_at.desc())
+                    .limit(100)
+                )
+            ],
             "periods": [
                 {
                     "id": p.id,
@@ -340,6 +402,20 @@ def retry(user_id: int, actor=AdminOnly):
         return {"generation": state.generation}
 
 
+@app.post("/api/users/{user_id}/reset-usage")
+def reset_subscriber_usage(user_id: int, body: ResetUsageInput, actor=AdminOnly):
+    with transaction() as db:
+        if not db.get(User, user_id):
+            raise HTTPException(404, "Subscriber not found")
+        reset = reset_usage(db, user_id, body, actor)
+        return {
+            "reset_id": reset.id,
+            "effective_at": reset.effective_at,
+            "period_id": reset.new_period_id,
+            "user": user_view(db, db.get(User, user_id), utcnow()),
+        }
+
+
 @app.post("/api/mock/accounting", status_code=202)
 def mock_accounting(body: Measurement, actor=AdminOnly):
     if settings().accounting_source != "mock":
@@ -355,43 +431,51 @@ def mock_accounting(body: Measurement, actor=AdminOnly):
     return {"status": "queued", "source": "mock"}
 
 
+def status_view(db):
+    return {
+        "ise_mode": settings().ise_mode,
+        "accounting_source": settings().accounting_source,
+        "live_adapter_selected": settings().ise_mode == "live",
+        "jobs": [
+            {"kind": kind, "status": status, "count": count}
+            for kind, status, count in db.execute(
+                select(Job.kind, Job.status, func.count()).group_by(Job.kind, Job.status)
+            )
+        ],
+        "checkpoints": [
+            {"source": c.source, "updated_at": c.updated_at} for c in db.scalars(select(Checkpoint))
+        ],
+        "worker_errors": [
+            {"kind": j.kind, "error": j.last_error, "attempts": j.attempts}
+            for j in db.scalars(
+                select(Job).where(Job.last_error.is_not(None)).order_by(Job.id.desc()).limit(20)
+            )
+        ],
+    }
+
+
 @app.get("/api/status")
 def status(actor=AdminOnly):
     with transaction() as db:
-        return {
-            "ise_mode": settings().ise_mode,
-            "accounting_source": settings().accounting_source,
-            "live_adapter_selected": settings().ise_mode == "live",
-            "jobs": [
-                {"kind": kind, "status": status, "count": count}
-                for kind, status, count in db.execute(
-                    select(Job.kind, Job.status, func.count()).group_by(Job.kind, Job.status)
-                )
-            ],
-            "checkpoints": [
-                {"source": c.source, "updated_at": c.updated_at} for c in db.scalars(select(Checkpoint))
-            ],
-            "worker_errors": [
-                {"kind": j.kind, "error": j.last_error, "attempts": j.attempts}
-                for j in db.scalars(
-                    select(Job).where(Job.last_error.is_not(None)).order_by(Job.id.desc()).limit(20)
-                )
-            ],
+        return status_view(db)
+
+
+def audit_views(db):
+    return [
+        {
+            "id": a.id,
+            "actor": a.actor,
+            "action": a.action,
+            "entity": a.entity,
+            "before": a.before,
+            "after": a.after,
+            "created_at": a.created_at,
         }
+        for a in db.scalars(select(Audit).order_by(Audit.id.desc()).limit(100))
+    ]
 
 
 @app.get("/api/audit")
 def audit_history(actor=AdminOnly):
     with transaction() as db:
-        return [
-            {
-                "id": a.id,
-                "actor": a.actor,
-                "action": a.action,
-                "entity": a.entity,
-                "before": a.before,
-                "after": a.after,
-                "created_at": a.created_at,
-            }
-            for a in db.scalars(select(Audit).order_by(Audit.id.desc()).limit(100))
-        ]
+        return audit_views(db)

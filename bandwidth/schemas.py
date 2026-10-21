@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, time
 from typing import Literal
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -69,6 +70,20 @@ class PolicyEdit(BaseModel):
 
 class UserCreate(BaseModel):
     username: str = Field(min_length=1, max_length=200, pattern=r"^\S+$")
+
+
+class ResetUsageInput(BaseModel):
+    expected_period_id: int = Field(gt=0)
+    request_id: UUID
+    reason: str = Field(min_length=3, max_length=300)
+
+    @field_validator("reason")
+    @classmethod
+    def meaningful_reason(cls, value):
+        value = value.strip()
+        if len(value) < 3:
+            raise ValueError("Enter a reason of at least 3 characters")
+        return value
 
 
 class AssignmentInput(BaseModel):

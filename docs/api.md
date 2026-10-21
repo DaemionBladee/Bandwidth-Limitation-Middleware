@@ -12,9 +12,13 @@ All routes below require an admin cookie or `Authorization: Bearer <ADMIN_API_TO
 | PUT | `/api/users/{id}/assignment` | `{ "policy_id": 1, "enabled": true, "application": "next_period" }` |
 | GET | `/api/users/{id}/history` | Latest 100 periods and attempts |
 | POST | `/api/users/{id}/reconcile` | Queue a new generation |
+| POST | `/api/users/{id}/reset-usage` | Audited fresh allowance; requires current period confirmation and idempotency UUID |
 | POST | `/api/mock/accounting` | Normalized measurement; only for mock accounting |
 | GET | `/api/status` | Adapter selections, jobs, checkpoints, worker errors |
 | GET | `/api/audit` | Latest 100 changes with before/after data |
+| GET | `/api/timezones` | Available IANA timezone names |
+| GET | `/api/dashboard?timezone=Asia/Yangon` | Consistent subscribers/policies/status/audit snapshot and seven local days of recorded traffic |
+| GET | `/api/events?timezone=Asia/Yangon` | Authenticated SSE snapshots after committed changes; `dashboard` and `session-expired` events |
 | GET | `/health` | Database connectivity (public, no data) |
 
 Example policy:
@@ -45,3 +49,17 @@ RADIUS JSONL (`ACCOUNTING_SOURCE=radius-jsonl`):
 ```
 
 The exporter supplies stable IDs, trusted attribution, timestamps, correct NAS directions, and an append-only file. There is no unauthenticated accounting ingestion endpoint. Implement the `AccountingSource` protocol for an actual SQL, HTTP, or stream source once its interface is known.
+
+Manual quota reset request:
+
+```json
+{
+  "expected_period_id": 123,
+  "request_id": "6179a202-8d4e-475d-b76d-7b71b796ee50",
+  "reason": "Support-approved allowance reset"
+}
+```
+
+Use the subscriber's `period_id` from `/api/users` or `/api/dashboard`. The response returns `reset_id`, `effective_at`, the new `period_id`, and the latest subscriber view. Replaying the same request is idempotent; reuse with different parameters or a changed current period returns 409. There must be an active interval; an expired custom interval returns 422. The reset preserves accounting records and baselines, closes the current segment, and queues a NORMAL decision atomically with its audit entry. The scheduled reset and pending assignment remain unchanged. `/api/users/{id}/history` includes reset reason, actor, timestamp, and both period references.
+
+The browser event stream uses the same HttpOnly admin cookie as the dashboard; bearer authentication also works for streaming HTTP clients. Session validity is rechecked on notifications and at least every 15 seconds. Notifications contain no subscriber data; authorized clients receive data only through a fresh read-only, repeatable-read snapshot. Browser reconnects receive a full snapshot, so notification loss during disconnects cannot leave the interface permanently stale.

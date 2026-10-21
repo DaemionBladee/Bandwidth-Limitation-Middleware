@@ -2,7 +2,16 @@ from sqlalchemy import func, select
 
 from bandwidth.config import settings
 from bandwidth.db import utcnow
-from bandwidth.models import AccountingRecord, Assignment, EnforcementState, Period, PolicyVersion, User
+from bandwidth.models import (
+    AccountingRecord,
+    Assignment,
+    Audit,
+    EnforcementState,
+    Period,
+    PolicyVersion,
+    UsageReset,
+    User,
+)
 from bandwidth.queue import enqueue
 from bandwidth.schedule import Window, window
 from bandwidth.schemas import PolicySpec
@@ -65,12 +74,35 @@ def ensure_period(db, user_id, version, bounds):
             starts_at=bounds.start,
             ends_at=bounds.end,
             limit_bytes=version.spec["quota_bytes"],
-            upload_bytes=totals[0],
-            download_bytes=totals[1],
+            upload_bytes=int(totals[0]),
+            download_bytes=int(totals[1]),
         )
         db.add(period)
         db.flush()
     return period
+
+
+def quota_window(db, user_id, spec, assignment, at):
+    bounds = assignment_window(spec, assignment, at)
+    if not bounds.start:
+        return bounds
+    resets = db.scalars(
+        select(UsageReset.effective_at)
+        .where(
+            UsageReset.user_id == user_id,
+            UsageReset.effective_at > bounds.start,
+            UsageReset.effective_at < bounds.end,
+        )
+        .order_by(UsageReset.effective_at)
+    ).all()
+    start, end = bounds.start, bounds.end
+    for boundary in resets:
+        if boundary <= at:
+            start = boundary
+        else:
+            end = boundary
+            break
+    return Window(start, end, end, bounds.inactive_mode)
 
 
 def evaluate(db, user_id, at=None):
@@ -81,7 +113,7 @@ def evaluate(db, user_id, at=None):
         return None, None, None
     version = db.get(PolicyVersion, assignment.version_id)
     spec = PolicySpec.model_validate(version.spec)
-    bounds = assignment_window(spec, assignment, now)
+    bounds = quota_window(db, user_id, spec, assignment, now)
     period = ensure_period(db, user_id, version, bounds)
     if not assignment.enabled or not spec.enabled:
         mode = "NORMAL"
@@ -156,3 +188,77 @@ def assign(db, user_id, version_id, enabled, application, at=None):
     db.flush()
     evaluate(db, user_id, now)
     return revision
+
+
+class UsageResetConflict(ValueError):
+    pass
+
+
+def reset_usage(db, user_id, body, actor, at=None):
+    now = at or utcnow()
+    lock_user(db, user_id)
+    request_id = str(body.request_id)
+    existing = db.scalar(
+        select(UsageReset).where(
+            UsageReset.user_id == user_id,
+            UsageReset.request_id == request_id,
+        )
+    )
+    if existing:
+        if existing.previous_period_id != body.expected_period_id or existing.reason != body.reason:
+            raise UsageResetConflict("This reset request ID was already used with different parameters")
+        return existing
+    _, period, bounds = evaluate(db, user_id, now)
+    if period is None:
+        raise ValueError("A usage reset requires an active quota period")
+    if period.id != body.expected_period_id:
+        raise UsageResetConflict("The quota period changed. Review the latest usage and try again")
+    if now <= period.starts_at:
+        raise UsageResetConflict("This allowance has just started; wait a moment before resetting it")
+    before = {
+        "period_id": period.id,
+        "used_bytes": period.used_bytes,
+        "upload_bytes": period.upload_bytes,
+        "download_bytes": period.download_bytes,
+        "starts_at": period.starts_at.isoformat(),
+        "ends_at": period.ends_at.isoformat(),
+    }
+    # Close ongoing views, retaining every accounting record and all completed totals.
+    for row in db.scalars(
+        select(Period).where(
+            Period.user_id == user_id,
+            Period.starts_at < now,
+            Period.ends_at > now,
+        )
+    ):
+        row.ends_at = now
+    reset = UsageReset(
+        user_id=user_id,
+        previous_period_id=period.id,
+        request_id=request_id,
+        effective_at=now,
+        actor=actor,
+        reason=body.reason,
+    )
+    db.add(reset)
+    db.flush()
+    _, fresh, _ = evaluate(db, user_id, now)
+    reset.new_period_id = fresh.id
+    db.add(
+        Audit(
+            actor=actor,
+            action="usage.reset",
+            entity=f"user:{user_id}",
+            before=before,
+            after={
+                "reset_id": reset.id,
+                "period_id": fresh.id,
+                "reason": body.reason,
+                "effective_at": now.isoformat(),
+                "used_bytes": fresh.used_bytes,
+                "next_reset": bounds.next_boundary.isoformat(),
+            },
+        )
+    )
+    db.flush()
+    return reset
