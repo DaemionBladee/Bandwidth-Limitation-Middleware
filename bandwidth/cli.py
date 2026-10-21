@@ -43,7 +43,7 @@ def bootstrap(username="admin"):
             raise SystemExit("Use a 12–512 character password distinct from the username")
         if not configured_password and getpass.getpass("Confirm new admin password: ") != password:
             raise SystemExit("Passwords do not match; no administrator created")
-        db.add(Admin(username=username, password_hash=password_hash(password)))
+        db.add(Admin(role="admin", username=username, password_hash=password_hash(password)))
         db.add(Audit(actor="bootstrap", action="admin.create", entity=username))
     print(f"Admin {username} created")
 

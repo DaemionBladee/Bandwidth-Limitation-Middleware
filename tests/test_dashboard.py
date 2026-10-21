@@ -25,7 +25,11 @@ def test_dashboard_full_workflow(tmp_path):
         pytest.skip("Install Chromium or set CHROMIUM_PATH for the browser integration test")
     demo()
     with transaction() as db:
-        db.add(Admin(username="browser-admin", password_hash=password_hash("browser-test-password")))
+        db.add(
+            Admin(
+                role="admin", username="browser-admin", password_hash=password_hash("browser-test-password")
+            )
+        )
     env = {**os.environ, "WORKER_INTERVAL_SECONDS": "1"}
     processes = []
     base = "http://127.0.0.1:8766"
@@ -89,7 +93,7 @@ def test_dashboard_full_workflow(tmp_path):
                     ),
                 )
                 page.goto(base)
-                page.get_by_label("Admin username").fill("browser-admin")
+                page.get_by_label("Sign-in username").fill("browser-admin")
                 page.get_by_label("Password", exact=True).fill("browser-test-password")
                 page.get_by_role("button", name="Sign in").click()
                 expect(page.get_by_role("heading", name="Network overview")).to_be_visible()
@@ -247,14 +251,13 @@ def test_dashboard_full_workflow(tmp_path):
                 page.get_by_role("button", name="Set default plan", exact=True).click()
                 expect(page.locator("#default-plan-card")).to_contain_text("AUTOMATIC ASSIGNMENT ON")
                 # Account creation uses the acting admin's password; successful forms clear secrets.
-                page.get_by_role("button", name="Administrators", exact=True).click()
-                page.get_by_role("button", name="Create administrator", exact=True).click()
+                page.get_by_role("button", name="Accounts", exact=True).click()
+                page.get_by_role("button", name="Create account", exact=True).click()
                 admin_form = page.locator("#admin-form")
-                admin_form.get_by_label("New administrator username", exact=True).fill("second-admin")
-                admin_form.get_by_label("New administrator password", exact=True).fill(
-                    "second-admin-passphrase"
-                )
-                admin_form.get_by_label("Confirm new administrator password", exact=True).fill(
+                admin_form.get_by_label("Account username", exact=True).fill("second-admin")
+                admin_form.get_by_label("Account role", exact=True).select_option("admin")
+                admin_form.get_by_label("New account password", exact=True).fill("second-admin-passphrase")
+                admin_form.get_by_label("Confirm new account password", exact=True).fill(
                     "second-admin-passphrase"
                 )
                 admin_form.get_by_label("Your current administrator password", exact=True).fill(
@@ -263,7 +266,7 @@ def test_dashboard_full_workflow(tmp_path):
                 admin_form.get_by_role("button", name="Create account", exact=True).click()
                 expect(page.locator("#admin-dialog")).not_to_be_visible()
                 expect(page.locator("#admin-list")).to_contain_text("second-admin")
-                expect(admin_form.get_by_label("New administrator password", exact=True)).to_have_value("")
+                expect(admin_form.get_by_label("New account password", exact=True)).to_have_value("")
                 page.evaluate("window.scrollTo(0,0)")
                 page.screenshot(path="artifacts/administrators.png", full_page=True)
                 # History presents readable comparisons, categories, actors, and an activity chart.
@@ -389,10 +392,10 @@ def test_dashboard_full_workflow(tmp_path):
                 expect(audit_pager.get_by_label("Change history page", exact=True)).to_have_value("1")
                 expect(page.locator("#audit-list .audit-item")).to_have_count(1)
                 page.get_by_role("button", name="Clear filters", exact=True).click()
-                page.get_by_role("button", name="Administrators", exact=True).click()
-                admins_pager = page.get_by_role("navigation", name="Administrators pagination", exact=True)
+                page.get_by_role("button", name="Accounts", exact=True).click()
+                admins_pager = page.get_by_role("navigation", name="Accounts pagination", exact=True)
                 expect(page.locator("#admin-list .admin-account")).to_have_count(1)
-                admins_pager.get_by_role("button", name="Next administrators page").click()
+                admins_pager.get_by_role("button", name="Next accounts page").click()
                 expect(page.locator("#admin-list")).to_contain_text("second-admin")
                 # Subscriber history sections have separate pages and one history size preference.
                 page.get_by_role("button", name="Subscribers", exact=True).click()
@@ -462,6 +465,82 @@ def test_dashboard_full_workflow(tmp_path):
                 preferences.get_by_role("button", name="Apply preferences").click()
                 expect(page.locator("#preferences-dialog")).to_be_visible()
                 preferences.get_by_role("button", name="Cancel", exact=True).click()
+                # Admin creates a read-only User, delegates one action, then deletes it.
+                page.set_viewport_size({"width": 1440, "height": 1080})
+                page.get_by_role("button", name="Accounts", exact=True).click()
+                page.get_by_role("button", name="Create account", exact=True).click()
+                expect(admin_form.get_by_label("Account role", exact=True)).to_have_value("user")
+                expect(admin_form.locator("#permission-options input:checked")).to_have_count(1)
+                admin_form.get_by_label("Account username", exact=True).fill("viewer-user")
+                admin_form.get_by_label("New account password", exact=True).fill("viewer-user-passphrase")
+                admin_form.get_by_label("Confirm new account password", exact=True).fill(
+                    "viewer-user-passphrase"
+                )
+                admin_form.get_by_label("Your current administrator password", exact=True).fill(
+                    "browser-test-password"
+                )
+                admin_form.get_by_role("button", name="Create account", exact=True).click()
+                expect(page.locator("#admin-dialog")).not_to_be_visible()
+                accounts_pager = page.get_by_role("navigation", name="Accounts pagination", exact=True)
+                accounts_pager.get_by_label("Accounts per page", exact=True).fill("10")
+                accounts_pager.get_by_label("Accounts per page", exact=True).press("Enter")
+                reader_card = page.locator(".admin-account").filter(has_text="viewer-user")
+                expect(reader_card).to_contain_text("Read only")
+                viewer_context = browser.new_context(viewport={"width": 1280, "height": 900})
+                viewer = viewer_context.new_page()
+                viewer.on("pageerror", lambda error: errors.append(str(error)))
+                viewer.goto(base)
+                viewer.get_by_label("Sign-in username", exact=True).fill("viewer-user")
+                viewer.get_by_label("Password", exact=True).fill("viewer-user-passphrase")
+                viewer.get_by_role("button", name="Sign in", exact=True).click()
+                expect(viewer.locator("#live-status")).to_contain_text("Live updates", timeout=15000)
+                expect(viewer.locator("#account-access-note")).to_contain_text("Read-only access")
+                expect(viewer.locator("#new-user")).not_to_be_visible()
+                expect(viewer.locator("#new-policy")).not_to_be_visible()
+                expect(viewer.get_by_role("button", name="Accounts", exact=True)).not_to_be_visible()
+                viewer.get_by_role("button", name="Policy library", exact=True).click()
+                expect(viewer.get_by_role("button", name="Edit policy", exact=True)).not_to_be_visible()
+                assert viewer.request.get(base + "/api/accounts").status == 403
+                assert viewer.request.get(base + "/api/dashboard").json()["admins"] == []
+                # Updating permissions revokes the already-open User event stream.
+                reader_card.get_by_role("button", name="Edit account", exact=True).click()
+                admin_form.locator('input[value="subscribers.create"]').check()
+                admin_form.get_by_label("Your current administrator password", exact=True).fill(
+                    "browser-test-password"
+                )
+                admin_form.get_by_role("button", name="Save account", exact=True).click()
+                expect(page.locator("#admin-dialog")).not_to_be_visible()
+                expect(viewer.locator("#login-view")).to_be_visible(timeout=15000)
+                viewer.get_by_label("Sign-in username", exact=True).fill("viewer-user")
+                viewer.get_by_label("Password", exact=True).fill("viewer-user-passphrase")
+                viewer.get_by_role("button", name="Sign in", exact=True).click()
+                expect(viewer.locator("#new-user")).to_be_visible()
+                expect(viewer.locator("#new-policy")).not_to_be_visible()
+                viewer.get_by_role("button", name="Add subscriber", exact=True).click()
+                viewer.get_by_label("Accounting username").fill("delegated-subscriber@example.com")
+                viewer.get_by_role("button", name="Create subscriber", exact=True).click()
+                expect(viewer.locator("#user-dialog")).not_to_be_visible()
+                expect(viewer.locator("#assignment-dialog")).not_to_be_visible()
+                viewer.get_by_role("button", name="Subscribers", exact=True).click()
+                expect(viewer.locator("#users-table")).to_contain_text("delegated-subscriber@example.com")
+                viewer_session = viewer.request.get(base + "/api/session").json()
+                assert (
+                    viewer.request.post(
+                        base + "/api/policies", headers={"X-CSRF-Token": viewer_session["csrf"]}, data={}
+                    ).status
+                    == 403
+                )
+                reader_card.get_by_role("button", name="Delete account", exact=True).click()
+                deletion = page.locator("#account-delete-form")
+                deletion.get_by_label("Your current administrator password", exact=True).fill(
+                    "browser-test-password"
+                )
+                deletion.get_by_role("button", name="Delete account", exact=True).click()
+                expect(page.locator("#account-delete-dialog")).not_to_be_visible()
+                expect(reader_card).to_have_count(0)
+                expect(viewer.locator("#login-view")).to_be_visible(timeout=15000)
+                viewer_context.close()
+                assert not errors, errors
                 # Revocation must close an already authenticated event stream.
                 session = page.request.get(base + "/api/session").json()
                 response = page.request.post(base + "/api/logout", headers={"X-CSRF-Token": session["csrf"]})

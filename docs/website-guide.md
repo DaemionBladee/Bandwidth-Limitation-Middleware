@@ -1,6 +1,6 @@
 # Bandwidth Engine: website guide
 
-Bandwidth Engine is an administrator website for managing subscriber data allowances, monitoring accounting usage, and coordinating normal or limited speed profiles through Cisco ISE.
+Bandwidth Engine is a website for managing subscriber data allowances, monitoring accounting usage, and coordinating normal or limited speed profiles through Cisco ISE. Admins have full access; Users start read-only and can perform only the additional actions granted by an Admin.
 
 The website manages policies and decisions. The WLC handles subscriber traffic and enforces the supported authorization settings returned through ISE. Actual usage must come from your configured accounting source.
 
@@ -11,7 +11,7 @@ The website manages policies and decisions. The WLC handles subscriber traffic a
 - [Quota policies and schedules](#quota-policies-and-schedules)
 - [Default plan and automatic subscribers](#default-plan-and-automatic-subscribers)
 - [Everyday subscriber tasks](#everyday-subscriber-tasks)
-- [Administrator accounts](#administrator-accounts)
+- [Account roles and permissions](#account-roles-and-permissions)
 - [Reading change history](#reading-change-history)
 - [Live updates and display preferences](#live-updates-and-display-preferences)
 - [How the complete process works](#how-the-complete-process-works)
@@ -36,7 +36,7 @@ The website manages policies and decisions. The WLC handles subscriber traffic a
 | Manual usage reset | Grant one subscriber a fresh allowance, record a reason, and preserve earlier usage. |
 | Enforcement visibility | Distinguish the requested mode from the confirmed applied state, errors, and attempts. |
 | Visual change history | See activity counts, a seven-day chart, filters, and readable Before/After comparisons. |
-| Administrator creation | Create individual admin accounts with current-password confirmation, password hashing, and audit history. |
+| Account roles and management | Admins manage Admin/User login accounts and assign User permissions. Users default to read-only. |
 | Personal preferences | Choose display timezone and light/dark theme; use desktop or mobile layouts. |
 | Admin API | Automate supported policy/subscriber operations through authenticated endpoints. |
 | Local simulation | Test accounting, quota decisions, and simulated ISE confirmation without an appliance. |
@@ -76,9 +76,9 @@ Create and edit policies, search by name/timezone, and review allowance, speed p
 
 Review administrative and automatic onboarding actions through a visual timeline. See [Reading change history](#reading-change-history).
 
-### Administrators
+### Accounts (Admin only)
 
-View administrator usernames and create an individual account for another operator. Each account currently has full workspace access. See [Administrator accounts](#administrator-accounts).
+Create, view, edit, disable, or delete website login accounts. Choose Admin/User roles, assign specific User permissions, or change a password. This page is available only to Admins. See [Account roles and permissions](#account-roles-and-permissions).
 
 ## Quota policies and schedules
 
@@ -182,29 +182,60 @@ This explains why current quota usage can become zero while the seven-day transf
 
 Choose **Reconcile enforcement** when a subscriber's desired/applied state needs another check. This queues work for the worker; it is not an immediate guarantee that the WLC changed. Review the resulting attempt and confirmed state.
 
-## Administrator accounts
+## Account roles and permissions
 
-### First account
+Website login accounts are separate from network subscribers. A User account is a dashboard login, not a subscriber Wi-Fi credential. Existing login accounts become Admins during migration, preserving their credentials.
 
-Run `make bootstrap` from the repository terminal. It securely prompts for a new password and confirmation. No public registration endpoint is exposed, and existing accounts are not overwritten.
+| Role | Default access | Who manages the account? |
+| --- | --- | --- |
+| Admin | All available CRUD actions, including login-account management. | Another Admin, or the account itself while preserving one enabled Admin. |
+| User | Read-only business dashboard access. Additional actions require explicit Admin assignment. | An Admin. |
 
-### Additional accounts
+Read-only Users can view overview metrics, policies, default-plan details, subscribers, usage/history, and business change history. They can change their own browser display preferences. Account lists, account-management audit events, and login-account changes are Admin-only. Business read access is workspace-wide; this is not a subscriber self-service portal or per-subscriber data isolation.
 
-1. Sign in with an existing administrator account.
-2. Open **Administrators → Create administrator**.
-3. Enter a unique username, a 12–512 character password, and the matching confirmation.
-4. Enter your own current administrator password.
-5. Choose **Create account**.
+### First Admin
 
-The new administrator can sign in independently. Passwords are stored as salted scrypt hashes and excluded from API responses and audit history. Password fields clear when the dialog closes. Five failed current-password confirmations block this action for five minutes. Cookie-based requests also require CSRF protection; an automation token alone cannot create administrators.
+Run `make bootstrap` from the repository terminal. It securely prompts for a new password and confirmation. There is no public registration endpoint, and existing accounts are not overwritten.
 
-All administrators have full workspace permissions. Administrator editing/deletion, password recovery, MFA, SSO, and separate viewer/operator roles are not currently provided. Subscriber accounts and administrator accounts are separate.
+### Create an account
+
+1. Sign in as an Admin and open **Accounts → Create account**.
+2. Enter a unique username and choose **User** or **Admin**. User is the default.
+3. For a User, leave read-only selected or explicitly select additional action permissions.
+4. Enter and confirm a unique 12–512 character password.
+5. Confirm your own current Admin password and choose **Create account**.
+
+Users can be granted these business actions independently:
+
+| Permission | Allows |
+| --- | --- |
+| Create policies / Edit policies | Create new policies or edit existing policies and their application timing. |
+| Create / Edit / Remove default plan | Manage the corresponding automatic-onboarding default action. |
+| Add subscribers | Register an accounting identity; an enabled default is assigned automatically. |
+| Assign subscriber policies | Change individual assignments, enabled status, and activation timing. |
+| Reset subscriber usage | Start a fresh allowance with an audited reason. |
+| Reconcile enforcement | Queue another enforcement attempt. |
+| Submit mock accounting | Submit simulation records when mock accounting is enabled. |
+
+Account management cannot be delegated to Users, even if all business actions are selected. Read-only is retained for every User. Selecting Admin gives full access without individual business-grant checkboxes. Authorization is enforced by the server as well as by available website controls.
+
+### Edit, disable, or delete
+
+Use the account row's **Edit account** action to change its username, role, assigned permissions, enabled status, or password. Leave both new password fields empty to keep the existing password. Switching an Admin to User starts with read-only selections; explicitly grant any additional actions needed.
+
+Use **Delete account** to remove a login. Both operations require your current Admin password and reject stale account revisions. All sessions for the changed/deleted account end, including live event streams. After an edit, the person signs in again with the current username/password to obtain their new permissions. Disabled/deleted accounts cannot sign in. Deleting a login leaves network subscribers, usage, and audit history intact.
+
+At least one enabled Admin must remain. Concurrent changes also enforce this rule. If you edit your own account, sign in again afterward.
+
+Passwords use salted scrypt hashes and are excluded from API responses, validation errors, and audits. Password fields clear when dialogs close. Five failed current-password confirmations block sensitive account operations for five minutes. Browser mutations require CSRF protection. An automation token alone cannot manage accounts.
+
+Public registration, MFA, SSO, forgotten-password recovery, custom role definitions, and subscriber-specific data isolation are not included. Admin-assisted password changes are available through **Edit account**.
 
 ## Reading change history
 
-The page shows the latest **100 retained events**. Summary counts describe that displayed history, and the activity chart counts events in that set over seven days. These are not all-time analytics.
+The page shows the latest **100 permitted retained events**. Account-management events are visible only to Admins. Summary counts describe that displayed history, and the activity chart counts events in that set over seven days. These are not all-time analytics.
 
-Use search, category, actor, or chart-day filters to find events. Categories include plans/defaults, subscribers, assignments, usage/resets, enforcement, and administrator access.
+Use search, category, actor, or chart-day filters to find events. Categories include plans/defaults, subscribers, assignments, usage/resets, enforcement, and account access (Admin only).
 
 Each event identifies the action, relevant subscriber/plan, acting administrator or service, and time. Expand **View change(s)** for a comparison such as:
 
@@ -228,7 +259,7 @@ The connection indicator reports **Live updates**, **Connecting**, **Reconnectin
 
 Use the globe button for **Display preferences**. Search timezone names/cities or UTC offsets, choose a display timezone and appearance, then apply. Preferences persist in the same browser. Desktop has a theme toggle; mobile can change appearance through preferences.
 
-Under **Content per page**, configure subscribers, policies, changes, administrators, and subscriber history separately. Any whole number from 1–100 is supported. Defaults are 25 subscribers, 6 policies, 10 changes, 10 administrators, and 10 entries per subscriber-history section. Each list also has its own **Per page** control. Quota periods, usage resets, and enforcement attempts share the history size preference but keep independent page positions. Saved sizes persist in this browser after reload.
+Under **Content per page**, configure subscribers, policies, changes, accounts, and subscriber history separately. Any whole number from 1–100 is supported. Defaults are 25 subscribers, 6 policies, 10 changes, 10 accounts, and 10 entries per subscriber-history section. Each list also has its own **Per page** control. Quota periods, usage resets, and enforcement attempts share the history size preference but keep independent page positions. Saved sizes persist in this browser after reload.
 
 Changing search, filters, sort order, or page size returns the affected list to page 1. Live updates retain the current page when it remains available; a shorter result set moves to its last valid page. Summary cards, charts, and the default-plan card continue to describe their full data rather than only the currently displayed entries.
 
@@ -268,7 +299,7 @@ Accounting intervals and processing/reauthorization delays mean some traffic can
 | Default selection | **Policy library → Default quota plan**, or **Use as default** |
 | Individual policy assignment | Subscriber action menu/detail drawer |
 | Display timezone/theme | Globe button → **Display preferences** |
-| Additional administrator accounts | **Administrators → Create administrator** |
+| Login roles, User permissions, passwords, and account status | **Accounts → Create account / Edit account** (Admin only) |
 | PostgreSQL connection | Local `.env`: `DATABASE_URL`; local Compose also uses `POSTGRES_PASSWORD` |
 | Accounting adapter | Local `.env`: `ACCOUNTING_SOURCE` and `ACCOUNTING_FILE` |
 | ISE connection/credentials | Local `.env`: `ISE_MODE`, `ISE_BASE_URL`, `ISE_USERNAME`, `ISE_PASSWORD`, `ISE_CA_BUNDLE` |
@@ -323,7 +354,8 @@ For existing installations, stop `make dev`, pull the branch update, and run `ma
 | XML APIs, alternate authentication, session/MAC-based paths, multiple simultaneous ISE sessions | Need adapter extensions if your deployment requires them. The current live framework expects Basic authentication, JSON responses, and one normalized active-session object per subscriber. |
 | Direct WLC QoS configuration | Not provided; enforcement is coordinated through the verified ISE integration. |
 | Live connected-client inventory, RF monitoring, speed tests, billing, subscriber self-service | Not provided. |
-| General policy/subscriber deletion, admin account editing/deletion/recovery, fine-grained roles | Not provided in the current website. Default removal retains historical policy/usage records. |
+| Login-account CRUD and assigned User action permissions | Implemented for Admins; Users start read-only. |
+| General policy/subscriber deletion, forgotten-password recovery, custom roles, per-subscriber data isolation | Not provided. Default removal retains historical policy/usage records. |
 
 An ISE request returning HTTP success does not by itself confirm a WLC applied the profile. Check the separately confirmed active-session state. **A mock confirmation is never live network enforcement.**
 
@@ -338,7 +370,8 @@ An ISE request returning HTTP success does not by itself confirm a WLC applied t
 | Default edited but an existing user is unchanged | Expected: default-card edits target future subscribers. Use an ordinary policy edit or individual reassignment to change existing users. |
 | Live indicator reconnects | Check API reachability, browser/network connectivity, session validity, and streaming support in the reverse proxy. |
 | LIMITED is requested but enforcement is pending/failed | Inspect attempts, worker errors, adapter mode, ISE mapping, credentials, reachability, and active-session readback. |
-| Administrator creation fails | Check your current password, matching new passwords, unique username, valid session, and the five-minute confirmation throttle. |
+| Account management fails | Confirm the acting account is an Admin, check current password and CSRF/session validity, revision conflicts, last-Admin protection, and the five-minute confirmation throttle. |
+| A User cannot see a write action | Read-only is the default. An Admin must explicitly assign the corresponding action through Edit account. |
 | Scheduled reset seems offset | Check the policy timezone; display timezone controls presentation separately. |
 | Export ingestion reports rotation/truncation | Retain/reconcile the old file and ingestion checkpoint. The current JSONL adapter expects append-only input. |
 

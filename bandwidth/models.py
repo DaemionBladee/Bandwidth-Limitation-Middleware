@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -198,9 +199,16 @@ class Audit(Base):
 
 class Admin(Base):
     __tablename__ = "admins"
+    __table_args__ = (CheckConstraint("role IN ('admin', 'user')", name="ck_account_role"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(200), unique=True)
     password_hash: Mapped[str] = mapped_column(Text)
+    role: Mapped[str] = mapped_column(String(10), default="user", server_default="user")
+    permissions: Mapped[list[str]] = mapped_column(
+        JSONB, default=lambda: ["read"], server_default=text("'[\"read\"]'::jsonb")
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
 
 class AdminSession(Base):

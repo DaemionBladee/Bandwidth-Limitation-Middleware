@@ -3,6 +3,7 @@
 import json
 import logging
 from datetime import UTC, datetime, time, timedelta
+from functools import partial
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 import anyio
@@ -12,10 +13,12 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, text
 
-from bandwidth.auth import require_admin
+from bandwidth.accounts import account_views
+from bandwidth.auth import authenticate
 from bandwidth.db import engine, transaction, utcnow
 from bandwidth.defaults import default_view
-from bandwidth.models import AccountingRecord, Admin, User
+from bandwidth.models import AccountingRecord, User
+from bandwidth.permissions import PERMISSION_OPTIONS
 
 log = logging.getLogger(__name__)
 TIMEZONES = sorted(available_timezones() - {"localtime", "Factory"})
@@ -28,7 +31,7 @@ def validate_timezone(name):
         raise ValueError("Select a valid IANA timezone") from exc
 
 
-def dashboard_snapshot(timezone="UTC", now=None):
+def dashboard_snapshot(timezone="UTC", now=None, *, principal=None):
     # Import serializers after the API has been initialized; route handlers and
     # the event stream use the same representations and authorization boundary.
     from bandwidth.api import audit_views, policy_views, status_view, user_view
@@ -58,11 +61,11 @@ def dashboard_snapshot(timezone="UTC", now=None):
                 "users": [user_view(db, row, now) for row in db.scalars(select(User).order_by(User.id))],
                 "policies": policy_views(db),
                 "status": status_view(db),
-                "audit": audit_views(db),
+                "audit": audit_views(db, include_accounts=bool(principal and principal.role == "admin")),
                 "default_plan": default_view(db),
-                "admins": [
-                    {"id": a.id, "username": a.username} for a in db.scalars(select(Admin).order_by(Admin.id))
-                ],
+                "admins": account_views(db) if principal and principal.role == "admin" else [],
+                "access": principal.public() if principal else None,
+                "account_permission_options": PERMISSION_OPTIONS,
                 "traffic": [
                     {
                         "day": (day := first_day + timedelta(days=i)).isoformat(),
@@ -97,11 +100,13 @@ async def event_response(request, timezone):
             yield "retry: 2500\n\n"
             while not await request.is_disconnected():
                 try:
-                    await anyio.to_thread.run_sync(require_admin, request)
+                    principal = await anyio.to_thread.run_sync(authenticate, request)
                 except HTTPException:
                     yield "event: session-expired\ndata: {}\n\n"
                     return
-                snapshot = await anyio.to_thread.run_sync(dashboard_snapshot, timezone)
+                snapshot = await anyio.to_thread.run_sync(
+                    partial(dashboard_snapshot, timezone, principal=principal)
+                )
                 encoded = json.dumps(snapshot, separators=(",", ":"), sort_keys=True)
                 if encoded != previous:
                     yield f"event: dashboard\ndata: {encoded}\n\n"

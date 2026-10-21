@@ -8,6 +8,7 @@ const storage = {
   get(key) { try { return localStorage.getItem(`bandwidth.${key}`); } catch { return null; } },
   set(key, value) { try { localStorage.setItem(`bandwidth.${key}`, value); } catch { /* Private browser storage. */ } }
 };
+let accountAccess = null;
 let csrf = '', snapshot = null, policies = [], users = [], timezones = ['UTC'];
 let activeTab = 'overview', activeFilter = 'all', chartMode = 'both', selectedDay = null;
 let stream = null, streamVersion = 0, loggedIn = false, lastUpdated = null;
@@ -24,7 +25,7 @@ const pageLists = {
   subscribers:{label:'Subscribers',unit:'subscribers',sizeKey:'subscribers'},
   policies:{label:'Policies',unit:'policies',sizeKey:'policies'},
   audit:{label:'Change history',unit:'changes',sizeKey:'audit'},
-  admins:{label:'Administrators',unit:'administrators',sizeKey:'admins'},
+  admins:{label:'Accounts',unit:'accounts',sizeKey:'admins'},
   periods:{label:'Quota periods',unit:'periods',sizeKey:'history'},
   resets:{label:'Usage resets',unit:'resets',sizeKey:'history'},
   attempts:{label:'Enforcement attempts',unit:'attempts',sizeKey:'history'}
@@ -67,6 +68,21 @@ const isLimited = user => user.ise?.desired.mode === 'LIMITED';
 const isNormal = user => user.ise?.desired.mode === 'NORMAL';
 const initials = username => username.split(/[@.\s_-]/).filter(Boolean).slice(0,2).map(s => s[0]).join('').toUpperCase() || 'S';
 function setText(selector, value) { const element = $(selector); if (element.textContent !== String(value)) element.textContent = value; }
+const isAdmin = () => accountAccess?.role === 'admin';
+const can = permission => isAdmin() || Boolean(accountAccess?.permissions?.includes(permission));
+function applyAccess() {
+  $$('[data-permission]').forEach(node=>node.hidden = !can(node.dataset.permission));
+  $$('[data-admin-only]').forEach(node=>node.hidden = !isAdmin());
+  $('#audit-category option[value="security"]').hidden = !isAdmin();
+  if (!isAdmin() && $('#audit-category').value === 'security') { $('#audit-category').value='all'; listPages.audit=1; }
+  $('#mock-usage').hidden = !can('accounting.submit') || snapshot?.status.accounting_source !== 'mock';
+  setText('#account-role-label',isAdmin() ? 'Admin · full access' : (accountAccess?.permissions?.length || 0) > 1 ? 'User · assigned permissions' : 'User · read only');
+  $('#account-access-note').hidden = isAdmin();
+  setText('#account-access-note',(accountAccess?.permissions?.length || 0) > 1 ? 'User access: reading is enabled. Additional actions are limited to the permissions assigned by your Admin.' : 'Read-only access: you can view dashboard data. An Admin can assign additional permissions.');
+  const policyAction = `${policyPurpose === 'default' ? 'default_plan' : 'policies'}.${$('#policy-form').elements.id.value ? 'update' : 'create'}`;
+  const guarded = {'#policy-dialog':can(policyAction),'#user-dialog':can('subscribers.create'),'#assignment-dialog':can('assignments.update'),'#reset-dialog':can('usage.reset'),'#usage-dialog':can('accounting.submit'),'#admin-dialog':isAdmin(),'#account-delete-dialog':isAdmin(),'#default-choice-dialog':can(defaultChoice?.policyId ? defaultChoice.configured ? 'default_plan.update' : 'default_plan.create' : 'default_plan.delete')};
+  Object.entries(guarded).forEach(([selector,allowed])=>{ if (!allowed && $(selector).open) $(selector).close(); });
+}
 function showError(message) { $('#app-error').textContent = message; $('#app-error').hidden = !message; }
 function toast(message, error = false) {
   const node = document.createElement('div'); node.className = `toast ${error ? 'error-toast' : ''}`;
@@ -82,7 +98,7 @@ function openDialog(selector) {
 }
 function closeMenu() { const menu = $('#subscriber-actions'); if (menu.matches(':popover-open')) menu.hidePopover(); }
 function closeSession() {
-  loggedIn = false; disconnectStream(); csrf = ''; snapshot = null; users = []; policies = [];
+  loggedIn = false; disconnectStream(); csrf = ''; snapshot = null; users = []; policies = []; accountAccess = null; $('#admin-list').replaceChildren();
   $$('dialog[open]').forEach(d => d.close()); closeMenu();
   $('#app-view').hidden = true; $('#login-view').hidden = false; $('#login-form').password.value = '';
 }
@@ -189,6 +205,7 @@ async function syncSnapshot() {
 }
 async function enterApp() {
   const session = await api('/session'); csrf = session.csrf || ''; loggedIn = true;
+  accountAccess = session; applyAccess();
   setText('#admin-name', session.username); setText('#admin-avatar', initials(session.username));
   $('#login-view').hidden = true; $('#app-view').hidden = false; $('#loading-state').hidden = Boolean(snapshot);
   const [zones] = await Promise.all([api('/timezones'), syncSnapshot()]);
@@ -198,6 +215,7 @@ async function enterApp() {
 }
 function setTab(tab, push = true) {
   if (!['overview', 'subscribers', 'policies', 'audit', 'admins'].includes(tab)) tab = 'overview';
+  if (tab === 'admins' && !isAdmin()) tab = 'overview';
   activeTab = tab;
   $('#overview-tab').hidden = !['overview','subscribers'].includes(tab);
   $('#policies-tab').hidden = tab !== 'policies'; $('#audit-tab').hidden = tab !== 'audit'; $('#admins-tab').hidden = tab !== 'admins';
@@ -208,14 +226,16 @@ function setTab(tab, push = true) {
     subscribers: ['Subscribers','Subscribers','Find a subscriber, manage their policy, and keep usage in view.'],
     policies: ['Policy library','Policy library','The right allowance and speeds for every subscriber.'],
     audit: ['Change history','Change history','A clear record of what changed, when, and who changed it.'],
-    admins: ['Administrators','Administrator access','Individual accounts for the people managing your network.']
+    admins: ['Accounts','Account access','Admin and User roles, with permissions assigned to each account.']
   };
   setText('#breadcrumb', labels[tab][0]); setText('#page-title', labels[tab][1]); setText('#page-description', labels[tab][2]);
   if (push && location.hash !== `#${tab}`) history.pushState(null, '', `#${tab}`);
 }
 function applySnapshot(data) {
   const previousUser = detailUserId && userById(detailUserId), previousAudit = snapshot?.audit[0]?.id;
-  snapshot = data; users = data.users; policies = data.policies; lastUpdated = new Date();
+  snapshot = data; users = data.users; policies = data.policies; accountAccess = data.access; lastUpdated = new Date();
+  setText('#admin-name',accountAccess.username); setText('#admin-avatar',initials(accountAccess.username));
+  if (activeTab === 'admins' && !isAdmin()) setTab('overview');
   $('#loading-state').hidden = true; $('#main-content').removeAttribute('aria-busy');
   const mock = data.status.ise_mode === 'mock';
   setText('#integration-title', mock ? 'Mock ISE · local simulation' : 'Live ISE adapter selected');
@@ -230,7 +250,7 @@ function applySnapshot(data) {
     renderDetail();
     if (JSON.stringify(previousUser) !== JSON.stringify(userById(detailUserId)) || previousAudit !== data.audit[0]?.id) loadHistory(detailUserId);
   }
-  updateClock();
+  applyAccess(); updateClock();
 }
 function renderMetrics() {
   const upload = users.reduce((n,u) => n + u.upload_bytes, 0), download = users.reduce((n,u) => n + u.download_bytes, 0);
@@ -262,7 +282,7 @@ function renderUserRow(user) {
   const state = user.ise, mode = state?.desired.mode;
   const enforcement = state ? badge(`${state.adapter === 'mock' ? 'MOCK · ' : ''}${state.status}`, state.status === 'failed' ? 'danger' : state.status === 'pending' ? 'warning' : 'neutral') : badge('Not assigned', 'neutral');
   const oldConfirmation = state?.confirmed && state.confirmed_generation !== state.generation ? `<span class="state-note">Last ${esc(state.confirmed_adapter || 'unknown')} · ${esc(state.confirmed.mode)}</span>` : '';
-  return `<tr><td><div class="subscriber-identity"><span class="avatar">${esc(initials(user.username))}</span><div><button class="subscriber-name" data-detail="${user.id}">${esc(user.username)}</button><small>${esc(user.policy || 'No policy assigned')}${user.revision ? ` · v${user.revision}` : ''}${user.policy && !user.enabled ? ' · disabled' : ''}</small>${user.pending.length ? '<span class="state-note">Policy change scheduled</span>' : ''}</div></div></td><td><div class="usage-amount"><span>${bytes(user.used_bytes)}</span><small>/ ${user.quota_bytes ? bytes(user.quota_bytes) : '—'}</small></div><div class="meter ${percent(user) >= 100 ? 'over' : ''}"><span></span></div><small>${user.remaining_bytes !== null ? `${bytes(user.remaining_bytes)} remaining` : 'No active allowance'}</small></td><td>${mode ? badge(mode, mode === 'LIMITED' ? 'warning' : '') : '—'}${state ? `<span class="speed-values">↓ ${num(state.desired.download_kbps / 1000)} / ↑ ${num(state.desired.upload_kbps / 1000)} Mbps</span>` : ''}</td><td title="${esc(state?.last_error || '')}">${enforcement}${oldConfirmation}${state?.last_error ? `<span class="state-note">${esc(state.last_error)}</span>` : ''}</td><td class="next-reset" title="Policy timezone: ${esc(user.timezone || '—')}">${date(user.next_reset)}<small data-countdown="${esc(user.next_reset || '')}">—</small></td><td><div class="row-actions"><button class="text-button" data-detail="${user.id}">History</button><button class="icon-button" data-menu="${user.id}" aria-label="Actions for ${esc(user.username)}">${icon('dots')}</button></div></td></tr>`;
+  return `<tr><td><div class="subscriber-identity"><span class="avatar">${esc(initials(user.username))}</span><div><button class="subscriber-name" data-detail="${user.id}">${esc(user.username)}</button><small>${esc(user.policy || 'No policy assigned')}${user.revision ? ` · v${user.revision}` : ''}${user.policy && !user.enabled ? ' · disabled' : ''}</small>${user.pending.length ? '<span class="state-note">Policy change scheduled</span>' : ''}</div></div></td><td><div class="usage-amount"><span>${bytes(user.used_bytes)}</span><small>/ ${user.quota_bytes ? bytes(user.quota_bytes) : '—'}</small></div><div class="meter ${percent(user) >= 100 ? 'over' : ''}"><span></span></div><small>${user.remaining_bytes !== null ? `${bytes(user.remaining_bytes)} remaining` : 'No active allowance'}</small></td><td>${mode ? badge(mode, mode === 'LIMITED' ? 'warning' : '') : '—'}${state ? `<span class="speed-values">↓ ${num(state.desired.download_kbps / 1000)} / ↑ ${num(state.desired.upload_kbps / 1000)} Mbps</span>` : ''}</td><td title="${esc(state?.last_error || '')}">${enforcement}${oldConfirmation}${state?.last_error ? `<span class="state-note">${esc(state.last_error)}</span>` : ''}</td><td class="next-reset" title="Policy timezone: ${esc(user.timezone || '—')}">${date(user.next_reset)}<small data-countdown="${esc(user.next_reset || '')}">—</small></td><td><div class="row-actions"><button class="text-button" data-detail="${user.id}">History</button><button class="icon-button" ${['assignments.update','usage.reset','enforcement.reconcile'].some(can) ? '' : 'hidden'} data-menu="${user.id}" aria-label="Actions for ${esc(user.username)}">${icon('dots')}</button></div></td></tr>`;
 }
 function renderUsers() {
   const counts = {all: users.length, normal: users.filter(isNormal).length, limited: users.filter(isLimited).length, attention: users.filter(hasAttention).length, unassigned: users.filter(u => !u.policy).length};
@@ -272,7 +292,7 @@ function renderUsers() {
   shown.forEach(user => { const row = $(`#users-table tr[data-key="${user.id}"]`); $('.meter span',row).style.width = `${percent(user)}%`; });
   $('#users-empty').hidden = users.length !== 0; $('#search-empty').hidden = !users.length || list.length !== 0;
   renderPager('subscribers');
-  updateCountdowns();
+  applyAccess(); updateCountdowns();
 }
 function renderTraffic() {
   const rows = snapshot.traffic, amount = row => (chartMode !== 'download' ? row.upload_bytes : 0) + (chartMode !== 'upload' ? row.download_bytes : 0);
@@ -298,16 +318,17 @@ function renderPolicies() {
   setText('#policy-count', `${policies.length} ${policies.length === 1 ? 'policy' : 'policies'}`);
   patchList($('#policy-grid'), pageItems('policies',list), p => p.id, policy => {
     const spec = policy.spec, schedule = spec.period_type === 'monthly' ? `Day ${spec.monthly_day} · clamps to month end` : spec.period_type === 'weekly' ? ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][spec.weekly_day] : spec.period_type === 'custom' ? `${date(spec.custom_start,spec.timezone)} → ${date(spec.custom_end,spec.timezone)}` : 'Every day';
-    return `<article class="policy-card"><div class="card-top">${badge(spec.enabled ? 'ENABLED' : 'DISABLED',spec.enabled ? '' : 'neutral')}<small>Version ${policy.revision} · #${policy.id}</small></div><h3>${esc(spec.name)}</h3><div class="quota">${gb(spec.quota_bytes)}<small>/ ${esc(spec.period_type)}</small></div><div class="profile-row"><span><b></b>Normal ↓ / ↑</span><strong>${num(spec.normal_download_kbps/1000)} / ${num(spec.normal_upload_kbps/1000)} Mbps</strong></div><div class="profile-row limited"><span><b></b>Limited ↓ / ↑</span><strong>${num(spec.limited_download_kbps/1000)} / ${num(spec.limited_upload_kbps/1000)} Mbps</strong></div><p class="schedule">${icon('globe')}<span>${esc(spec.timezone)} · ${esc(spec.reset_time.slice(0,5))}<br>${esc(schedule)}</span></p><div class="policy-card-actions"><button class="secondary" data-edit="${policy.id}">Edit policy ${icon('arrow-right')}</button>${snapshot.default_plan?.policy_id === policy.id ? badge('NEW SUBSCRIBER DEFAULT') : `<button class="text-button" data-use-default="${policy.id}">Use as default</button>`}</div></article>`;
+    return `<article class="policy-card"><div class="card-top">${badge(spec.enabled ? 'ENABLED' : 'DISABLED',spec.enabled ? '' : 'neutral')}<small>Version ${policy.revision} · #${policy.id}</small></div><h3>${esc(spec.name)}</h3><div class="quota">${gb(spec.quota_bytes)}<small>/ ${esc(spec.period_type)}</small></div><div class="profile-row"><span><b></b>Normal ↓ / ↑</span><strong>${num(spec.normal_download_kbps/1000)} / ${num(spec.normal_upload_kbps/1000)} Mbps</strong></div><div class="profile-row limited"><span><b></b>Limited ↓ / ↑</span><strong>${num(spec.limited_download_kbps/1000)} / ${num(spec.limited_upload_kbps/1000)} Mbps</strong></div><p class="schedule">${icon('globe')}<span>${esc(spec.timezone)} · ${esc(spec.reset_time.slice(0,5))}<br>${esc(schedule)}</span></p><div class="policy-card-actions"><button class="secondary" data-edit="${policy.id}" data-permission="policies.update">Edit policy ${icon('arrow-right')}</button>${snapshot.default_plan?.policy_id === policy.id ? badge('NEW SUBSCRIBER DEFAULT') : `<button class="text-button" data-use-default="${policy.id}" data-permission="${snapshot.default_plan?.configured ? 'default_plan.update' : 'default_plan.create'}">Use as default</button>`}</div></article>`;
   },policy=>JSON.stringify([policy,snapshot.default_plan?.policy_id]));
   renderPager('policies');
-  if (!list.length) $('#policy-grid').innerHTML = `<div class="empty-state"><span class="empty-icon">${icon('layers')}</span><h3>${policies.length ? 'No matching policies' : 'Create your first policy'}</h3><p>${policies.length ? 'Try a different policy name or timezone.' : 'Define a quota, speed profiles, and a reset schedule.'}</p><button class="secondary" data-new-policy>New policy</button></div>`;
+  if (!list.length) $('#policy-grid').innerHTML = `<div class="empty-state"><span class="empty-icon">${icon('layers')}</span><h3>${policies.length ? 'No matching policies' : can('policies.create') ? 'Create your first policy' : 'No policies yet'}</h3><p>${policies.length ? 'Try a different policy name or timezone.' : 'Define a quota, speed profiles, and a reset schedule.'}</p><button class="secondary" data-new-policy data-permission="policies.create">New policy</button></div>`;
+  applyAccess();
 }
-const actionNames = {'policy.create':'Policy created','policy.edit':'Policy updated','user.create':'Subscriber added','user.discover':'Subscriber discovered','assignment.change':'Assignment changed','assignment.default':'Default plan assigned','usage.reset':'Subscriber usage reset','enforcement.retry':'Enforcement reconciliation requested','mock.accounting':'Mock accounting submitted','admin.create':'Administrator created','assignment.create':'Assignment created','default_plan.create':'Default plan created','default_plan.edit':'Default plan updated','default_plan.delete':'Default plan removed'};
-const auditCategory = action => action.startsWith('policy') || action.startsWith('default_plan') ? 'plans' : action.startsWith('assignment') ? 'assignments' : action.startsWith('user') ? 'subscribers' : action.startsWith('admin') ? 'security' : action.startsWith('enforcement') ? 'enforcement' : 'usage';
-const categoryNames = {plans:'Plans & defaults',subscribers:'Subscribers',assignments:'Assignments',usage:'Usage & resets',enforcement:'Enforcement',security:'Administrator access'};
+const actionNames = {'policy.create':'Policy created','policy.edit':'Policy updated','user.create':'Subscriber added','user.discover':'Subscriber discovered','assignment.change':'Assignment changed','assignment.default':'Default plan assigned','usage.reset':'Subscriber usage reset','enforcement.retry':'Enforcement reconciliation requested','mock.accounting':'Mock accounting submitted','admin.create':'Administrator created','account.create':'Account created','account.update':'Account updated','account.delete':'Account deleted','assignment.create':'Assignment created','default_plan.create':'Default plan created','default_plan.edit':'Default plan updated','default_plan.delete':'Default plan removed'};
+const auditCategory = action => action.startsWith('policy') || action.startsWith('default_plan') ? 'plans' : action.startsWith('assignment') ? 'assignments' : action.startsWith('user') ? 'subscribers' : (action.startsWith('admin') || action.startsWith('account.')) ? 'security' : action.startsWith('enforcement') ? 'enforcement' : 'usage';
+const categoryNames = {plans:'Plans & defaults',subscribers:'Subscribers',assignments:'Assignments',usage:'Usage & resets',enforcement:'Enforcement',security:'Account access'};
 const categoryIcons = {plans:'layers',subscribers:'users',assignments:'user-plus',usage:'reset',enforcement:'sync',security:'shield'};
-const fieldNames = {name:'Plan name',username:'Username',quota_bytes:'Data allowance',normal_download_kbps:'Normal download',normal_upload_kbps:'Normal upload',limited_download_kbps:'Limited download',limited_upload_kbps:'Limited upload',period_type:'Quota period',timezone:'Policy timezone',reset_time:'Local reset time',monthly_day:'Day of month',weekly_day:'Day of week',custom_start:'Custom start',custom_end:'Custom end',repeat_interval_seconds:'Repeat interval',expiry_action:'Expiry action',enabled:'Enabled',application:'Application timing',policy_id:'Assigned plan',policy_name:'Plan name',effective_from:'Effective from',used_bytes:'Allowance used',upload_bytes:'Upload used',download_bytes:'Download used',next_reset:'Next scheduled reset',reason:'Reason',default_status:'Default for new subscribers',generation:'Reconciliation attempt'};
+const fieldNames = {name:'Plan name',username:'Username',quota_bytes:'Data allowance',normal_download_kbps:'Normal download',normal_upload_kbps:'Normal upload',limited_download_kbps:'Limited download',limited_upload_kbps:'Limited upload',period_type:'Quota period',timezone:'Policy timezone',reset_time:'Local reset time',monthly_day:'Day of month',weekly_day:'Day of week',custom_start:'Custom start',custom_end:'Custom end',repeat_interval_seconds:'Repeat interval',expiry_action:'Expiry action',enabled:'Enabled',application:'Application timing',policy_id:'Assigned plan',policy_name:'Plan name',effective_from:'Effective from',used_bytes:'Allowance used',upload_bytes:'Upload used',download_bytes:'Download used',next_reset:'Next scheduled reset',reason:'Reason',default_status:'Default for new subscribers',generation:'Reconciliation attempt',role:'Account role',permissions:'Assigned permissions',credentials_updated:'Credentials updated'};
 function localDay(value) {
   const parts = formatter(`day:${displayZone}`,{timeZone:displayZone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(value));
   const part = key => parts.find(p => p.type === key).value;
@@ -322,6 +343,8 @@ function auditObject(a, value, before) {
 }
 function auditValue(key,value) {
   if (value === null || value === undefined || value === '') return 'Not set';
+  if (key === 'permissions') return value.map(code=>snapshot.account_permission_options.find(option=>option.code===code)?.label || code).join(', ');
+  if (key === 'role') return value === 'admin' ? 'Admin' : 'User';
   if (key.endsWith('_bytes')) return bytes(value);
   if (key.endsWith('_kbps')) return `${num(value/1000)} Mbps`;
   if (key === 'policy_id') return policies.find(p => p.id === value)?.spec.name || `Policy #${value}`;
@@ -357,7 +380,7 @@ function renderAudit() {
     const changes = auditChanges(a), category = auditCategory(a.action), day = localDay(a.created_at);
     const affected = a.after?.affected_users;
     const context = a.action.startsWith('default_plan') ? 'Applies to future subscribers. Existing allowances stay in place.' : affected ? `${affected.length} assigned subscriber${affected.length===1?'':'s'} · ${auditValue('application',a.after.application)}` : a.after?.reason || '';
-    const subject = a.after?.username || a.after?.spec?.name || a.before?.spec?.name || a.entity_label || a.entity;
+    const subject = a.after?.username || a.before?.username || a.after?.spec?.name || a.before?.spec?.name || a.entity_label || a.entity;
     return `<article class="audit-item"><span class="audit-icon ${category}">${icon(categoryIcons[category])}</span><div class="audit-content"><div class="audit-card-heading"><div><strong>${esc(actionNames[a.action] || a.action.replaceAll('.',' '))}</strong><p class="audit-subject">${esc(subject)}</p></div>${badge(categoryNames[category],'neutral')}</div><div class="audit-meta"><span class="audit-actor-avatar">${esc(initials(a.actor))}</span><span>${esc(a.actor)}</span><i></i><time datetime="${esc(a.created_at)}">${date(a.created_at,displayZone,true)}</time></div>${context ? `<p class="audit-context">${esc(context)}</p>` : ''}${changes.length ? `<details class="change-details"><summary>${icon('chevron-down')}View ${changes.length} ${changes.length===1?'change':'changes'}</summary><div class="change-grid"><div class="change-grid-heading"><span>Parameter</span><span>Before</span><span>After</span></div>${changes.map(c=>`<div class="change-row"><strong>${esc(c.label)}</strong><span class="old-value">${esc(c.before)}</span><span class="new-value">${esc(c.after)}</span></div>`).join('')}</div></details>` : '<p class="audit-context">Action recorded successfully.</p>'}<span class="audit-day-marker">${day}</span></div></article>`;
   }, a => JSON.stringify([a,displayZone,policies.map(p=>[p.id,p.spec.name])]));
   renderPager('audit');
@@ -365,9 +388,10 @@ function renderAudit() {
 }
 function renderDefaultPlan() {
   const plan = snapshot.default_plan, spec = plan?.spec;
-  const html = `<div class="default-plan-heading"><span class="default-plan-symbol">${icon('layers')}</span><div><p class="eyebrow">AUTOMATIC ONBOARDING</p><h2>Default quota plan</h2><p>One plan to welcome every new subscriber. A separate allowance for each person.</p></div>${badge(spec ? spec.enabled ? 'AUTOMATIC ASSIGNMENT ON' : 'AUTOMATIC ASSIGNMENT PAUSED' : 'NOT CONFIGURED', spec?.enabled ? '' : 'neutral')}</div>${spec ? `<div class="default-plan-values"><div><small>Plan</small><strong>${esc(spec.name)}</strong></div><div><small>Allowance</small><strong>${bytes(spec.quota_bytes)} <span>/ ${esc(spec.period_type)}</span></strong></div><div><small>Normal ↓ / ↑</small><strong>${num(spec.normal_download_kbps/1000)} / ${num(spec.normal_upload_kbps/1000)} Mbps</strong></div><div><small>Limited ↓ / ↑</small><strong>${num(spec.limited_download_kbps/1000)} / ${num(spec.limited_upload_kbps/1000)} Mbps</strong></div></div><p class="default-plan-schedule">${icon('globe')} ${esc(spec.timezone)} · ${esc(spec.reset_time.slice(0,5))} · policy version ${plan.policy_revision}</p>` : '<p class="default-empty">Create a default plan, or choose “Use as default” on a policy below. New accounting identities can then be registered automatically.</p>'}<div class="default-plan-footer"><p>Applied at registration or first accounting record. Existing subscribers keep their assignments.</p><div>${spec ? '<button class="secondary" data-edit-default>Edit default plan</button><button class="text-button danger-text" data-remove-default>Remove default</button>' : '<button class="primary" data-create-default>'+icon('plus')+'Create default plan</button>'}</div></div>`;
+  const html = `<div class="default-plan-heading"><span class="default-plan-symbol">${icon('layers')}</span><div><p class="eyebrow">AUTOMATIC ONBOARDING</p><h2>Default quota plan</h2><p>One plan to welcome every new subscriber. A separate allowance for each person.</p></div>${badge(spec ? spec.enabled ? 'AUTOMATIC ASSIGNMENT ON' : 'AUTOMATIC ASSIGNMENT PAUSED' : 'NOT CONFIGURED', spec?.enabled ? '' : 'neutral')}</div>${spec ? `<div class="default-plan-values"><div><small>Plan</small><strong>${esc(spec.name)}</strong></div><div><small>Allowance</small><strong>${bytes(spec.quota_bytes)} <span>/ ${esc(spec.period_type)}</span></strong></div><div><small>Normal ↓ / ↑</small><strong>${num(spec.normal_download_kbps/1000)} / ${num(spec.normal_upload_kbps/1000)} Mbps</strong></div><div><small>Limited ↓ / ↑</small><strong>${num(spec.limited_download_kbps/1000)} / ${num(spec.limited_upload_kbps/1000)} Mbps</strong></div></div><p class="default-plan-schedule">${icon('globe')} ${esc(spec.timezone)} · ${esc(spec.reset_time.slice(0,5))} · policy version ${plan.policy_revision}</p>` : '<p class="default-empty">Create a default plan, or choose “Use as default” on a policy below. New accounting identities can then be registered automatically.</p>'}<div class="default-plan-footer"><p>Applied at registration or first accounting record. Existing subscribers keep their assignments.</p><div>${spec ? '<button class="secondary" data-edit-default data-permission="default_plan.update">Edit default plan</button><button class="text-button danger-text" data-remove-default data-permission="default_plan.delete">Remove default</button>' : '<button class="primary" data-create-default data-permission="default_plan.create">'+icon('plus')+'Create default plan</button>'}</div></div>`;
   const card = $('#default-plan-card');
   if (card.dataset.signature !== html) { card.innerHTML = html; card.dataset.signature = html; }
+  applyAccess();
 }
 function chooseDefault(policyId = null) {
   const plan = snapshot.default_plan;
@@ -378,8 +402,30 @@ function chooseDefault(policyId = null) {
   openDialog('#default-choice-dialog');
 }
 function renderAdmins() {
-  patchList($('#admin-list'),pageItems('admins',snapshot.admins || []),a=>a.id,a=>`<article class="admin-account"><span class="avatar">${esc(initials(a.username))}</span><div><strong>${esc(a.username)}</strong><small>Full workspace administrator</small></div>${badge(a.username === $('#admin-name').textContent ? 'YOU' : 'ADMINISTRATOR','neutral')}</article>`);
+  const accounts = snapshot.admins || [], enabledAdmins = accounts.filter(a=>a.role === 'admin' && a.enabled).length;
+  patchList($('#admin-list'),pageItems('admins',accounts),a=>a.id,a=>`<article class="admin-account"><span class="avatar">${esc(initials(a.username))}</span><div><strong>${esc(a.username)} ${a.id === accountAccess.id ? badge('YOU','neutral') : ''}</strong><small>${a.role === 'admin' ? 'Full CRUD and account management' : a.permissions.length === 1 ? 'Read only' : `Read + ${a.permissions.length-1} assigned actions`}</small></div><div class="account-badges">${badge(a.role === 'admin' ? 'ADMIN' : 'USER',a.role === 'admin' ? '' : 'neutral')}${!a.enabled ? badge('DISABLED','warning') : ''}</div><div class="account-actions"><button class="text-button" data-edit-account="${a.id}">Edit account</button><button class="text-button danger-text" data-delete-account="${a.id}" ${a.role==='admin' && a.enabled && enabledAdmins<=1 ? 'disabled title="Keep at least one enabled Admin"' : ''}>Delete account</button></div></article>`,a=>JSON.stringify([a,accountAccess.id,enabledAdmins]));
   renderPager('admins');
+}
+function accountRoleFields() {
+  const admin = $('#account-role').value === 'admin';
+  $('#account-permissions').hidden = admin; $('#account-admin-note').hidden = !admin;
+}
+function openAccount(id = null) {
+  if (!isAdmin()) return;
+  const form = $('#admin-form'), account = snapshot.admins.find(a=>a.id===id); form.reset();
+  form.account_id.value=account?.id || ''; form.revision.value=account?.revision || '';
+  form.username.value=account?.username || ''; form.role.value=account?.role || 'user'; form.enabled.checked=account?.enabled ?? true;
+  form.password.required=!account; form.confirm_password.required=!account;
+  $('#permission-options').innerHTML=snapshot.account_permission_options.map(option=>`<label class="permission-choice"><input type="checkbox" name="permission" value="${esc(option.code)}" ${(account?.role === 'user' ? account.permissions : ['read']).includes(option.code) ? 'checked' : ''} ${option.code==='read' ? 'disabled' : ''}><span>${esc(option.label)}<small>${esc(option.description)}</small></span></label>`).join('');
+  setText('#account-dialog-title',account ? 'Edit account' : 'Create account'); setText('#account-save',account ? 'Save account' : 'Create account');
+  setText('#account-password-note',account ? 'Leave both new password fields empty to keep the existing password.' : 'Choose a unique password or passphrase of 12–512 characters.');
+  accountRoleFields(); openDialog('#admin-dialog');
+}
+function deleteAccount(id) {
+  if (!isAdmin()) return;
+  const account=snapshot.admins.find(a=>a.id===id), form=$('#account-delete-form'); if (!account) return;
+  form.reset(); form.account_id.value=account.id; form.revision.value=account.revision;
+  setText('#account-delete-name',`${account.username} · ${account.role === 'admin' ? 'Admin' : 'User'}`); openDialog('#account-delete-dialog');
 }
 function renderWorkers() {
   const labels = {ingest:['Accounting ingestion','database'],evaluate:['Quota decisions','gauge'],rollover:['Period rollover','reset'],reconcile:['Enforcement checks','shield']};
@@ -462,7 +508,7 @@ function showMenu(id, anchor) {
   menu.showPopover(); const rect = anchor.getBoundingClientRect(), height = menu.getBoundingClientRect().height;
   menu.style.left = `${Math.max(10,Math.min(innerWidth-222,rect.right-212))}px`;
   menu.style.top = `${rect.bottom+height+8 < innerHeight ? rect.bottom+5 : Math.max(10,rect.top-height-5)}px`;
-  $('[role=menuitem]:not(:disabled)',menu)?.focus({preventScroll:true});
+  $('[role=menuitem]:not(:disabled):not([hidden])',menu)?.focus({preventScroll:true});
 }
 async function reconcile(id) {
   try { await api(`/users/${id}/reconcile`,{method:'POST'}); toast('Enforcement reconciliation queued'); await syncSnapshot(); }
@@ -488,7 +534,7 @@ function renderDetail() {
   const state = user.ise;
   $('#detail-summary').innerHTML = `<div class="detail-usage"><div class="detail-usage-head"><div><strong>${bytes(user.used_bytes)}</strong><small>/ ${user.quota_bytes ? bytes(user.quota_bytes) : '—'}</small></div>${state ? badge(state.desired.mode,isLimited(user) ? 'warning' : '') : badge('Unassigned','neutral')}</div><div class="meter ${percent(user)>=100?'over':''}"><span></span></div><p><span>↑ ${bytes(user.upload_bytes)} uploaded</span><span>↓ ${bytes(user.download_bytes)} downloaded</span></p></div><div class="detail-keyvals"><div><small>Remaining allowance</small><strong>${user.remaining_bytes !== null ? bytes(user.remaining_bytes) : 'No active allowance'}</strong></div><div><small>Next reset · ${esc(user.timezone || displayZone)}</small><strong>${date(user.next_reset,user.timezone || displayZone)}</strong></div><div><small>Requested profile</small><strong>${state ? `${num(state.desired.download_kbps/1000)} / ${num(state.desired.upload_kbps/1000)} Mbps` : '—'}</strong></div><div><small>Confirmed enforcement</small>${state?.confirmed ? badge(`${state.confirmed_adapter === 'mock' ? 'MOCK · ' : ''}${state.confirmed.mode}`,state.confirmed_generation !== state.generation ? 'warning' : 'neutral') : '<strong>Not confirmed</strong>'}<span class="state-note">${state ? esc(state.status) : 'Assign a policy to begin'}</span></div></div>${state?.last_error ? `<p class="detail-error">${esc(state.last_error)}</p>` : ''}`;
   $('.meter span',$('#detail-summary')).style.width = `${percent(user)}%`;
-  $('#detail-reset').disabled = !user.period_id; $('#detail-reconcile').disabled = !state;
+  $('#detail-reset').disabled = !user.period_id; $('#detail-reconcile').disabled = !state; applyAccess();
 }
 async function loadHistory(id) {
   const revision = ++historyRequest;
@@ -541,7 +587,7 @@ formHandler('#policy-form',async form => {
 });
 formHandler('#user-form',async form => {
   const user = await api('/users',{method:'POST',body:JSON.stringify({username:form.username.value})});
-  $('#user-dialog').close(); await syncSnapshot(); toast(user.default_assigned ? 'Subscriber added with the default quota plan' : 'Subscriber added'); if (!user.default_assigned && policies.length) assignUser(user.id);
+  $('#user-dialog').close(); await syncSnapshot(); toast(user.default_assigned ? 'Subscriber added with the default quota plan' : 'Subscriber added'); if (!user.default_assigned && policies.length && can('assignments.update')) assignUser(user.id);
 });
 formHandler('#assignment-form',async form => {
   await api(`/users/${form.user_id.value}/assignment`,{method:'PUT',body:JSON.stringify({policy_id:Number(form.policy_id.value),enabled:form.enabled.checked,application:form.application.value})});
@@ -575,11 +621,25 @@ formHandler('#default-choice-form',async () => {
   $('#default-choice-dialog').close(); toast(choice.policyId ? 'Default plan saved for new subscribers' : 'Default removed. Existing subscribers are unchanged.'); await syncSnapshot();
 });
 formHandler('#admin-form',async form => {
-  await api('/admins',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(form)))});
-  $('#admin-dialog').close(); toast('Administrator created. They can now sign in with their own account.'); await syncSnapshot();
+  const editing=Boolean(form.account_id.value), body={username:form.username.value,role:form.role.value,enabled:form.enabled.checked,permissions:form.role.value==='admin' ? ['read'] : ['read',...$$('input[name="permission"]:checked:not(:disabled)',form).map(input=>input.value)],current_password:form.current_password.value};
+  if (editing) body.expected_revision=Number(form.revision.value);
+  if (!editing || form.password.value || form.confirm_password.value) { body.password=form.password.value; body.confirm_password=form.confirm_password.value; }
+  const result=await api(editing ? `/accounts/${form.account_id.value}` : '/accounts',{method:editing?'PUT':'POST',body:JSON.stringify(body)});
+  $('#admin-dialog').close();
+  if (editing && result.id === accountAccess.id) { closeSession(); $('#login-error').textContent='Your account changed. Sign in again to continue.'; return; }
+  toast(editing ? 'Account saved. Its existing sessions have ended.' : 'Account created with the selected role and permissions.'); await syncSnapshot();
+});
+formHandler('#account-delete-form',async form=>{
+  const id=Number(form.account_id.value);
+  await api(`/accounts/${id}`,{method:'DELETE',body:JSON.stringify({expected_revision:Number(form.revision.value),current_password:form.current_password.value})});
+  $('#account-delete-dialog').close();
+  if (id===accountAccess.id) { closeSession(); $('#login-error').textContent='Your account was deleted.'; return; }
+  toast('Account deleted. Subscriber usage history is preserved.'); await syncSnapshot();
 });
 $('#admin-dialog').addEventListener('close',()=>$('#admin-form').reset());
-$('#new-admin').addEventListener('click',()=>{ $('#admin-form').reset(); openDialog('#admin-dialog'); });
+$('#account-delete-dialog').addEventListener('close',()=>$('#account-delete-form').reset());
+$('#account-role').addEventListener('change',()=>{ if ($('#account-role').value === 'user') $$('#permission-options input:not(:disabled)').forEach(input=>input.checked=false); accountRoleFields(); });
+$('#new-admin').addEventListener('click',()=>openAccount());
 $('#policy-form').period_type.addEventListener('change',scheduleFields);
 $('#policy-zone-search').addEventListener('input',event => populateZoneSelect($('#policy-timezone'),event.target.value));
 $('#display-zone-search').addEventListener('input',event => populateZoneSelect($('#display-timezone'),event.target.value));
@@ -608,6 +668,8 @@ document.addEventListener('click',event => {
   const button = event.target.closest('button'); if (!button) return;
   if (button.classList.contains('close-dialog')) button.closest('dialog').close();
   if (button.dataset.tab) setTab(button.dataset.tab);
+  if (button.dataset.editAccount) openAccount(Number(button.dataset.editAccount));
+  if (button.dataset.deleteAccount) deleteAccount(Number(button.dataset.deleteAccount));
   if (button.dataset.pageStep) { const key=button.dataset.pageList; listPages[key]+=Number(button.dataset.pageStep); renderPagedList(key); }
   if (button.dataset.filter) { activeFilter = button.dataset.filter; listPages.subscribers = 1; renderUsers(); }
   if (button.dataset.chart) { chartMode = button.dataset.chart; renderTraffic(); }
@@ -637,7 +699,7 @@ document.addEventListener('keydown',event=>{
   if (event.key === 'Enter' && event.target.matches('[data-page-size],[data-page-jump]')) { event.preventDefault(); event.target.blur(); }
 });
 $('#subscriber-actions').addEventListener('keydown',event => {
-  const items = $$('[role=menuitem]:not(:disabled)',$('#subscriber-actions'));
+  const items = $$('[role=menuitem]:not(:disabled):not([hidden])',$('#subscriber-actions'));
   const index = items.indexOf(document.activeElement);
   if (['ArrowDown','ArrowUp','Home','End'].includes(event.key)) {
     event.preventDefault();

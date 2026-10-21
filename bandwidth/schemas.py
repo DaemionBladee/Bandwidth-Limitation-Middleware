@@ -5,6 +5,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from bandwidth.permissions import Permission
+
 MAX_COUNTER = 9_000_000_000_000_000
 
 
@@ -102,6 +104,47 @@ class AdminCreate(BaseModel):
 
 class UserCreate(BaseModel):
     username: str = Field(min_length=1, max_length=200, pattern=r"^\S+$")
+
+
+class AccountAccess(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    username: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.@-]*$")
+    role: Literal["admin", "user"] = "user"
+    permissions: list[Permission] = Field(default_factory=lambda: ["read"])
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def baseline_read(self):
+        self.permissions = ["read"] if self.role == "admin" else sorted(set(["read", *self.permissions]))
+        return self
+
+
+class AccountCreate(AccountAccess, AdminCreate):
+    pass
+
+
+class AccountEdit(AccountAccess):
+    expected_revision: int = Field(ge=1)
+    current_password: str = Field(min_length=1, max_length=512, repr=False)
+    password: str | None = Field(default=None, min_length=12, max_length=512, repr=False)
+    confirm_password: str | None = Field(default=None, max_length=512, repr=False)
+
+    @model_validator(mode="after")
+    def matching_password(self):
+        if self.password is None and self.confirm_password is not None:
+            raise ValueError("Provide both new password fields or leave both empty")
+        if self.password is not None:
+            if self.password != self.confirm_password:
+                raise ValueError("New passwords must match")
+            if not self.password.strip() or self.password.casefold() == self.username.casefold():
+                raise ValueError("Choose a password distinct from the account username")
+        return self
+
+
+class AccountDelete(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=1)
+    current_password: str = Field(min_length=1, max_length=512, repr=False)
 
 
 class ResetUsageInput(BaseModel):

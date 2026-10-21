@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import secrets
+from dataclasses import dataclass
 from datetime import timedelta
 
 from fastapi import HTTPException, Request
@@ -10,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 from bandwidth.config import settings
 from bandwidth.db import transaction, utcnow
 from bandwidth.models import Admin, AdminSession, LoginThrottle
+from bandwidth.permissions import ALL_PERMISSIONS
 
 COOKIE = "bandwidth_session"
 
@@ -39,7 +41,33 @@ def check_origin(request):
         raise HTTPException(403, "Cross-origin admin request rejected")
 
 
-def require_admin(request: Request):
+def effective_permissions(account):
+    return (
+        list(ALL_PERMISSIONS)
+        if account.role == "admin"
+        else sorted({"read", *(p for p in account.permissions if p in ALL_PERMISSIONS)})
+    )
+
+
+@dataclass(frozen=True)
+class Principal:
+    id: int | None
+    username: str
+    role: str
+    permissions: list[str]
+    revision: int
+
+    def public(self):
+        return {
+            "id": self.id,
+            "username": self.username,
+            "role": self.role,
+            "permissions": self.permissions,
+            "revision": self.revision,
+        }
+
+
+def authenticate(request: Request):
     config = settings()
     auth = request.headers.get("authorization", "")
     if (
@@ -47,20 +75,49 @@ def require_admin(request: Request):
         and auth.startswith("Bearer ")
         and hmac.compare_digest(auth[7:], config.admin_api_token)
     ):
-        return "api-admin"
-    token = request.cookies.get(COOKIE, "")
-    with transaction() as db:
-        session = db.get(AdminSession, digest(token)) if token else None
-        if not session or session.expires_at <= utcnow():
-            raise HTTPException(401, "Admin authentication required")
-        admin = db.get(Admin, session.admin_id)
-        if not admin:
-            raise HTTPException(401, "Admin authentication required")
-        if request.method not in ("GET", "HEAD", "OPTIONS"):
-            check_origin(request)
-            if not hmac.compare_digest(request.headers.get("x-csrf-token", ""), session.csrf):
-                raise HTTPException(403, "Invalid CSRF token")
-        return admin.username
+        principal = Principal(None, "api-admin", "admin", list(ALL_PERMISSIONS), 0)
+    else:
+        token = request.cookies.get(COOKIE, "")
+        with transaction() as db:
+            session = db.get(AdminSession, digest(token)) if token else None
+            if not session or session.expires_at <= utcnow():
+                raise HTTPException(401, "Account authentication required")
+            account = db.get(Admin, session.admin_id)
+            if not account or not account.enabled:
+                raise HTTPException(401, "Account authentication required")
+            if request.method not in ("GET", "HEAD", "OPTIONS"):
+                check_origin(request)
+                if not hmac.compare_digest(request.headers.get("x-csrf-token", ""), session.csrf):
+                    raise HTTPException(403, "Invalid CSRF token")
+            principal = Principal(
+                account.id, account.username, account.role, effective_permissions(account), account.revision
+            )
+    request.state.principal = principal
+    return principal
+
+
+def require_reader(request: Request):
+    return authenticate(request).username
+
+
+def require_admin(request: Request):
+    principal = authenticate(request)
+    if principal.role != "admin":
+        raise HTTPException(403, "Administrator role required")
+    return principal.username
+
+
+def require_permission(code):
+    if code not in ALL_PERMISSIONS:
+        raise ValueError("Unknown permission")
+
+    def dependency(request: Request):
+        principal = authenticate(request)
+        if principal.role != "admin" and code not in principal.permissions:
+            raise HTTPException(403, f"Permission required: {code}")
+        return principal.username
+
+    return dependency
 
 
 def login(request, username, password):
@@ -80,7 +137,7 @@ def login(request, username, password):
         admin = db.scalar(select(Admin).where(Admin.username == username))
         # Equal scrypt work for unknown users.
         valid = password_matches(password, admin.password_hash if admin else "scrypt$unknown$" + "0" * 128)
-        if admin and valid:
+        if admin and admin.enabled and valid:
             throttle.failures = 0
             token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
             db.add(
@@ -95,12 +152,12 @@ def login(request, username, password):
         else:
             throttle.failures += 1
     if not result:
-        raise HTTPException(401, "Invalid admin credentials")
+        raise HTTPException(401, "Invalid account credentials")
     return result
 
 
 def confirm_admin_password(request, password):
-    """Sensitive account creation requires the acting human's session and password."""
+    """Sensitive account management requires the acting human's session and password."""
     check_origin(request)
     now, valid = utcnow(), False
     actor = None
@@ -108,13 +165,15 @@ def confirm_admin_password(request, password):
         token = request.cookies.get(COOKIE, "")
         session = db.get(AdminSession, digest(token)) if token else None
         if not session or session.expires_at <= now:
-            raise HTTPException(403, "Sign in with an administrator account to create another administrator")
+            raise HTTPException(403, "Sign in with an administrator account to manage login accounts")
         if not hmac.compare_digest(request.headers.get("x-csrf-token", ""), session.csrf):
             raise HTTPException(403, "Invalid CSRF token")
         admin = db.get(Admin, session.admin_id)
-        if not admin:
-            raise HTTPException(401, "Admin authentication required")
-        key = digest(f"admin-create:{admin.id}")
+        if not admin or not admin.enabled:
+            raise HTTPException(401, "Account authentication required")
+        if admin.role != "admin":
+            raise HTTPException(403, "Administrator role required")
+        key = digest(f"account-management:{admin.id}")
         db.execute(
             insert(LoginThrottle).values(key=key, failures=0, window_start=now).on_conflict_do_nothing()
         )

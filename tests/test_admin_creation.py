@@ -16,7 +16,7 @@ NEW_PASSWORD = "a-new-individual-passphrase"
 
 def sign_in(client):
     with transaction() as db:
-        db.add(Admin(username="owner", password_hash=password_hash(PASSWORD)))
+        db.add(Admin(role="admin", username="owner", password_hash=password_hash(PASSWORD)))
     response = client.post("/api/login", json={"username": "owner", "password": PASSWORD})
     return {"X-CSRF-Token": response.json()["csrf"]}
 

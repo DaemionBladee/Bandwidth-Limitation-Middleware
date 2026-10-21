@@ -1,6 +1,6 @@
 # Admin API
 
-All routes below require an admin cookie or `Authorization: Bearer <ADMIN_API_TOKEN>`, except login and health. Cookie mutations need `X-CSRF-Token` from login or `/api/session`. Inject bearer credentials securely; examples omit them.
+All routes below require an authenticated account cookie or `Authorization: Bearer <ADMIN_API_TOKEN>`, except login and health. Cookie mutations need `X-CSRF-Token` from login or `/api/session`. Admins have all business permissions; Users default to read-only and need the corresponding assigned grant for mutations. Login-account management is Admin-only and additionally requires a current Admin browser session and password confirmation. Inject bearer credentials securely; examples omit them.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
@@ -19,6 +19,8 @@ All routes below require an admin cookie or `Authorization: Bearer <ADMIN_API_TO
 | DELETE | `/api/default-plan?expected_revision=1` | Remove selection; retain assignments, policy, usage, and audit |
 | GET | `/api/admins` | Administrator IDs/usernames; no password hashes |
 | POST | `/api/admins` | Create admin; requires browser session, CSRF, and current password confirmation |
+| GET / POST | `/api/accounts` | Admin-only list/create of website login accounts; creation defaults to User/read-only |
+| GET / PUT / DELETE | `/api/accounts/{id}` | Admin-only account read/update/delete; mutations require current password and expected revision |
 | POST | `/api/mock/accounting` | Normalized measurement; only for mock accounting |
 | GET | `/api/status` | Adapter selections, jobs, checkpoints, worker errors |
 | GET | `/api/audit` | Latest 100 changes with before/after data |
@@ -88,3 +90,38 @@ Administrator creation body:
 ```
 
 The existing admin browser cookie and `X-CSRF-Token` are required; a bearer token alone cannot create accounts. Invalid current-password confirmations return 403 and are limited to five failures per administrator per five minutes (429 while blocked). Username conflicts return 409. Invalid/mismatched new credentials return 422 without echoing input. Success returns only `{ "id": …, "username": … }`. Audit includes the new username and acting admin, never password fields. There is no public bootstrap endpoint; use the CLI for first setup.
+
+## Website account roles
+
+`/api/admins` is retained as an Admin-only compatibility endpoint and lists/creates Admin-role accounts. The website uses `/api/accounts` for both roles. Existing logins migrate as Admins. New `/api/accounts` registrations default to `role: "user"` and `permissions: ["read"]` when those fields are omitted.
+
+```json
+{
+  "username": "network.viewer",
+  "role": "user",
+  "permissions": ["read", "subscribers.create"],
+  "enabled": true,
+  "password": "<new 12–512 character password>",
+  "confirm_password": "<same new password>",
+  "current_password": "<acting Admin password>"
+}
+```
+
+`role` is `admin` or `user`. Admin permissions are effective in full; User grants are validated against the list below and always retain `read`. Account-management grants are deliberately unavailable to Users. Unknown grant names return 422. Admin-only authorization failures return 403, even when a User holds every business grant.
+
+| Grant | Protected actions |
+| --- | --- |
+| `read` | Business GET endpoints, session/logout, and authorized SSE/dashboard access |
+| `policies.create` / `policies.update` | POST `/api/policies` / PUT `/api/policies/{id}` |
+| `default_plan.create` / `default_plan.update` / `default_plan.delete` | POST / PUT / DELETE `/api/default-plan` |
+| `subscribers.create` | POST `/api/users` |
+| `assignments.update` | PUT `/api/users/{id}/assignment` |
+| `usage.reset` | POST `/api/users/{id}/reset-usage` |
+| `enforcement.reconcile` | POST `/api/users/{id}/reconcile` |
+| `accounting.submit` | POST `/api/mock/accounting` when mock accounting is enabled |
+
+Account responses contain `id`, `username`, `role`, effective `permissions`, `enabled`, and `revision`; never password hashes. PUT uses the full username/role/permissions/enabled configuration plus `expected_revision` and `current_password`. Optional `password` and `confirm_password` change credentials; omit both to keep the password. DELETE uses `{ "expected_revision": 1, "current_password": "…" }` as its JSON body.
+
+All account mutations require the acting Admin's valid cookie, CSRF, and current password, including when a bearer header is present. Edits/deletion revoke all target sessions. Disabled accounts cannot log in. Stale revisions and removing/disabling/demoting the last enabled Admin return 409. Writes are serialized so concurrent operations also preserve the last Admin. Account deletion retains subscriber and audit data. Successful account mutations are audited without secrets.
+
+`/api/session` includes the current account's ID, role, permissions, revision, and CSRF. Dashboard/SSE include current-account `access` and the business permission catalogue. Users receive an empty `admins` list and no account-management audit events; direct account-list/detail requests are forbidden. Live streams revalidate session access on notifications and at least every 15 seconds, closing revoked/disabled/deleted sessions. Business read access is workspace-wide and does not establish per-subscriber or tenant isolation.

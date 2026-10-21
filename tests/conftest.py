@@ -18,7 +18,7 @@ from psycopg import sql  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.engine import make_url  # noqa: E402
 
-from bandwidth import accounting, api, auth, engine, queue, worker  # noqa: E402
+from bandwidth import accounting, accounts, api, auth, engine, queue, worker  # noqa: E402
 from bandwidth.db import Base, transaction  # noqa: E402
 from bandwidth.models import DefaultPlan  # noqa: E402
 
@@ -49,6 +49,6 @@ def clock(monkeypatch):
         now = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
 
     value = Clock()
-    for module in (accounting, api, auth, engine, queue, worker):
+    for module in (accounting, accounts, api, auth, engine, queue, worker):
         monkeypatch.setattr(module, "utcnow", lambda: value.now)
     return value

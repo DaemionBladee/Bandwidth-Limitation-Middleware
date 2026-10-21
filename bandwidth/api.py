@@ -8,7 +8,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
-from bandwidth.auth import COOKIE, confirm_admin_password, digest, login, password_hash, require_admin
+from bandwidth.accounts import account_view, account_views, create_account, manage_account
+from bandwidth.auth import (
+    COOKIE,
+    confirm_admin_password,
+    digest,
+    login,
+    require_admin,
+    require_permission,
+    require_reader,
+)
 from bandwidth.config import settings
 from bandwidth.dashboard import TIMEZONES, dashboard_snapshot, event_response
 from bandwidth.db import transaction, utcnow
@@ -40,6 +49,9 @@ from bandwidth.models import (
 )
 from bandwidth.queue import enqueue
 from bandwidth.schemas import (
+    AccountCreate,
+    AccountDelete,
+    AccountEdit,
     AdminCreate,
     AssignmentInput,
     DefaultPlanEdit,
@@ -55,6 +67,7 @@ app = FastAPI(title="Bandwidth Engine", version="0.1.0", docs_url=None, redoc_ur
 static = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=static), name="static")
 AdminOnly = Depends(require_admin)
+ReaderOnly = Depends(require_reader)
 
 
 @app.middleware("http")
@@ -126,29 +139,29 @@ def sign_in(body: LoginInput, request: Request, response: Response):
 
 
 @app.get("/api/session")
-def session_info(request: Request, actor=AdminOnly):
+def session_info(request: Request, actor=ReaderOnly):
     with transaction() as db:
         session = db.get(AdminSession, digest(request.cookies.get(COOKIE, "")))
-        return {"username": actor, "csrf": session.csrf if session else None}
+        return {**request.state.principal.public(), "csrf": session.csrf if session else None}
 
 
 @app.get("/api/timezones")
-def timezones(actor=AdminOnly):
+def timezones(actor=ReaderOnly):
     return TIMEZONES
 
 
 @app.get("/api/dashboard")
-def dashboard_data(timezone: str = "UTC", actor=AdminOnly):
-    return dashboard_snapshot(timezone, utcnow())
+def dashboard_data(request: Request, timezone: str = "UTC", actor=ReaderOnly):
+    return dashboard_snapshot(timezone, utcnow(), principal=request.state.principal)
 
 
 @app.get("/api/events")
-async def live_events(request: Request, timezone: str = "UTC", actor=AdminOnly):
+async def live_events(request: Request, timezone: str = "UTC", actor=ReaderOnly):
     return await event_response(request, timezone)
 
 
 @app.post("/api/logout")
-def sign_out(request: Request, response: Response, actor=AdminOnly):
+def sign_out(request: Request, response: Response, actor=ReaderOnly):
     with transaction() as db:
         session = db.get(AdminSession, digest(request.cookies.get(COOKIE, "")))
         if session:
@@ -160,18 +173,54 @@ def sign_out(request: Request, response: Response, actor=AdminOnly):
 @app.get("/api/admins")
 def administrators(actor=AdminOnly):
     with transaction() as db:
-        return [{"id": a.id, "username": a.username} for a in db.scalars(select(Admin).order_by(Admin.id))]
+        return [
+            {"id": a.id, "username": a.username}
+            for a in db.scalars(select(Admin).where(Admin.role == "admin").order_by(Admin.id))
+        ]
 
 
 @app.post("/api/admins", status_code=201)
 def create_administrator(body: AdminCreate, request: Request, actor=AdminOnly):
-    actor = confirm_admin_password(request, body.current_password)
+    confirm_admin_password(request, body.current_password)
     with transaction() as db:
-        admin = Admin(username=body.username, password_hash=password_hash(body.password))
-        db.add(admin)
-        db.flush()
-        audit(db, actor, "admin.create", f"admin:{admin.id}", after={"username": admin.username})
-        return {"id": admin.id, "username": admin.username}
+        result = create_account(db, request, body, legacy=True)
+        return {"id": result["id"], "username": result["username"]}
+
+
+@app.get("/api/accounts")
+def list_accounts(actor=AdminOnly):
+    with transaction() as db:
+        return account_views(db)
+
+
+@app.get("/api/accounts/{account_id}")
+def get_account(account_id: int, actor=AdminOnly):
+    with transaction() as db:
+        account = db.get(Admin, account_id)
+        if not account:
+            raise HTTPException(404, "Account not found")
+        return account_view(account)
+
+
+@app.post("/api/accounts", status_code=201)
+def add_account(body: AccountCreate, request: Request, actor=AdminOnly):
+    confirm_admin_password(request, body.current_password)
+    with transaction() as db:
+        return create_account(db, request, body)
+
+
+@app.put("/api/accounts/{account_id}")
+def edit_account(account_id: int, body: AccountEdit, request: Request, actor=AdminOnly):
+    confirm_admin_password(request, body.current_password)
+    with transaction() as db:
+        return manage_account(db, request, account_id, body)
+
+
+@app.delete("/api/accounts/{account_id}")
+def delete_account(account_id: int, body: AccountDelete, request: Request, actor=AdminOnly):
+    confirm_admin_password(request, body.current_password)
+    with transaction() as db:
+        return manage_account(db, request, account_id, body, remove=True)
 
 
 def audit(db, actor, action, entity, before=None, after=None):
@@ -198,13 +247,13 @@ def policy_views(db):
 
 
 @app.get("/api/policies")
-def policies(actor=AdminOnly):
+def policies(actor=ReaderOnly):
     with transaction() as db:
         return policy_views(db)
 
 
 @app.post("/api/policies", status_code=201)
-def create_policy(spec: PolicySpec, actor=AdminOnly):
+def create_policy(spec: PolicySpec, actor=Depends(require_permission("policies.create"))):
     with transaction() as db:
         policy = Policy(name=spec.name)
         db.add(policy)
@@ -215,7 +264,7 @@ def create_policy(spec: PolicySpec, actor=AdminOnly):
 
 
 @app.get("/api/default-plan")
-def get_default_plan(actor=AdminOnly):
+def get_default_plan(actor=ReaderOnly):
     with transaction() as db:
         return default_view(db)
 
@@ -256,19 +305,21 @@ def save_default(db, body, actor, create=False):
 
 
 @app.post("/api/default-plan", status_code=201)
-def create_default_plan(body: DefaultPlanInput, actor=AdminOnly):
+def create_default_plan(body: DefaultPlanInput, actor=Depends(require_permission("default_plan.create"))):
     with transaction() as db:
         return save_default(db, body, actor, create=True)
 
 
 @app.put("/api/default-plan")
-def update_default_plan(body: DefaultPlanEdit, actor=AdminOnly):
+def update_default_plan(body: DefaultPlanEdit, actor=Depends(require_permission("default_plan.update"))):
     with transaction() as db:
         return save_default(db, body, actor)
 
 
 @app.delete("/api/default-plan")
-def remove_default_plan(expected_revision: int = Query(ge=0), actor=AdminOnly):
+def remove_default_plan(
+    expected_revision: int = Query(ge=0), actor=Depends(require_permission("default_plan.delete"))
+):
     with transaction() as db:
         row = lock_default(db)
         if row.policy_id is None:
@@ -284,7 +335,7 @@ def remove_default_plan(expected_revision: int = Query(ge=0), actor=AdminOnly):
 
 
 @app.put("/api/policies/{policy_id}")
-def edit_policy(policy_id: int, body: PolicyEdit, actor=AdminOnly):
+def edit_policy(policy_id: int, body: PolicyEdit, actor=Depends(require_permission("policies.update"))):
     now = utcnow()
     with transaction() as db:
         default = lock_default(db)
@@ -330,7 +381,7 @@ def edit_policy(policy_id: int, body: PolicyEdit, actor=AdminOnly):
 
 
 @app.post("/api/users", status_code=201)
-def create_user(body: UserCreate, actor=AdminOnly):
+def create_user(body: UserCreate, actor=Depends(require_permission("subscribers.create"))):
     with transaction() as db:
         version = provisioning_version(db)
         user, created = register(db, body.username, actor, utcnow(), version)
@@ -340,7 +391,7 @@ def create_user(body: UserCreate, actor=AdminOnly):
 
 
 @app.put("/api/users/{user_id}/assignment")
-def assignment(user_id: int, body: AssignmentInput, actor=AdminOnly):
+def assignment(user_id: int, body: AssignmentInput, actor=Depends(require_permission("assignments.update"))):
     with transaction() as db:
         # Lock policy before user, consistently with policy edits.
         if not db.scalar(select(Policy).where(Policy.id == body.policy_id).with_for_update()):
@@ -420,13 +471,13 @@ def user_view(db, user, now):
 
 
 @app.get("/api/users")
-def users(actor=AdminOnly):
+def users(actor=ReaderOnly):
     with transaction() as db:
         return [user_view(db, row, utcnow()) for row in db.scalars(select(User).order_by(User.id))]
 
 
 @app.get("/api/users/{user_id}/history")
-def history(user_id: int, actor=AdminOnly):
+def history(user_id: int, actor=ReaderOnly):
     with transaction() as db:
         if not db.get(User, user_id):
             raise HTTPException(404, "Subscriber not found")
@@ -485,7 +536,7 @@ def history(user_id: int, actor=AdminOnly):
 
 
 @app.post("/api/users/{user_id}/reconcile")
-def retry(user_id: int, actor=AdminOnly):
+def retry(user_id: int, actor=Depends(require_permission("enforcement.reconcile"))):
     with transaction() as db:
         lock_user(db, user_id)
         evaluate(db, user_id)
@@ -505,7 +556,9 @@ def retry(user_id: int, actor=AdminOnly):
 
 
 @app.post("/api/users/{user_id}/reset-usage")
-def reset_subscriber_usage(user_id: int, body: ResetUsageInput, actor=AdminOnly):
+def reset_subscriber_usage(
+    user_id: int, body: ResetUsageInput, actor=Depends(require_permission("usage.reset"))
+):
     with transaction() as db:
         if not db.get(User, user_id):
             raise HTTPException(404, "Subscriber not found")
@@ -519,7 +572,7 @@ def reset_subscriber_usage(user_id: int, body: ResetUsageInput, actor=AdminOnly)
 
 
 @app.post("/api/mock/accounting", status_code=202)
-def mock_accounting(body: Measurement, actor=AdminOnly):
+def mock_accounting(body: Measurement, actor=Depends(require_permission("accounting.submit"))):
     if settings().accounting_source != "mock":
         raise HTTPException(409, "Mock accounting is disabled")
     body.counters()
@@ -561,12 +614,15 @@ def status_view(db):
 
 
 @app.get("/api/status")
-def status(actor=AdminOnly):
+def status(actor=ReaderOnly):
     with transaction() as db:
         return status_view(db)
 
 
-def audit_views(db):
+def audit_views(db, include_accounts=True):
+    query = select(Audit)
+    if not include_accounts:
+        query = query.where(~Audit.action.startswith("account."), ~Audit.action.startswith("admin."))
     user_names = dict(db.execute(select(User.id, User.username)).all())
     policy_names = dict(db.execute(select(Policy.id, Policy.name)).all())
 
@@ -587,11 +643,11 @@ def audit_views(db):
             "after": a.after,
             "created_at": a.created_at,
         }
-        for a in db.scalars(select(Audit).order_by(Audit.id.desc()).limit(100))
+        for a in db.scalars(query.order_by(Audit.id.desc()).limit(100))
     ]
 
 
 @app.get("/api/audit")
-def audit_history(actor=AdminOnly):
+def audit_history(request: Request, actor=ReaderOnly):
     with transaction() as db:
-        return audit_views(db)
+        return audit_views(db, include_accounts=request.state.principal.role == "admin")

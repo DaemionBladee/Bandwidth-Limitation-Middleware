@@ -40,7 +40,7 @@ def test_admin_authorization_required(client, method, path):
 
 def test_admin_cookie_csrf_and_logout(client):
     with transaction() as db:
-        db.add(Admin(username="admin", password_hash=password_hash("long-test-password")))
+        db.add(Admin(role="admin", username="admin", password_hash=password_hash("long-test-password")))
     assert client.post("/api/login", json={"username": "admin", "password": "wrong"}).status_code == 401
     response = client.post("/api/login", json={"username": "admin", "password": "long-test-password"})
     assert response.status_code == 200
