@@ -14,7 +14,8 @@ from sqlalchemy import func, select, text
 
 from bandwidth.auth import require_admin
 from bandwidth.db import engine, transaction, utcnow
-from bandwidth.models import AccountingRecord, User
+from bandwidth.defaults import default_view
+from bandwidth.models import AccountingRecord, Admin, User
 
 log = logging.getLogger(__name__)
 TIMEZONES = sorted(available_timezones() - {"localtime", "Factory"})
@@ -58,6 +59,10 @@ def dashboard_snapshot(timezone="UTC", now=None):
                 "policies": policy_views(db),
                 "status": status_view(db),
                 "audit": audit_views(db),
+                "default_plan": default_view(db),
+                "admins": [
+                    {"id": a.id, "username": a.username} for a in db.scalars(select(Admin).order_by(Admin.id))
+                ],
                 "traffic": [
                     {
                         "day": (day := first_day + timedelta(days=i)).isoformat(),

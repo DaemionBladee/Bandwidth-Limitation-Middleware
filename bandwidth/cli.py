@@ -1,6 +1,7 @@
 import argparse
 import getpass
 import os
+import re
 
 from dotenv import load_dotenv
 from sqlalchemy import select
@@ -26,15 +27,22 @@ DEMO = PolicySpec(
 
 def bootstrap(username="admin"):
     load_dotenv()
+    if len(username) > 200 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@-]*", username):
+        raise SystemExit("Use an admin username containing letters, numbers, dots, underscores, @ or hyphens")
     with transaction() as db:
         if db.scalar(select(Admin).where(Admin.username == username)):
             print("Admin already exists; no credentials changed")
             return
-        password = os.environ.get("ADMIN_BOOTSTRAP_PASSWORD") or getpass.getpass(
-            "New admin password (12+ characters): "
-        )
-        if len(password) < 12:
-            raise SystemExit("Use a password of at least 12 characters")
+        configured_password = os.environ.get("ADMIN_BOOTSTRAP_PASSWORD")
+        password = configured_password or getpass.getpass("New admin password (12+ characters): ")
+        if (
+            not 12 <= len(password) <= 512
+            or not password.strip()
+            or password.casefold() == username.casefold()
+        ):
+            raise SystemExit("Use a 12–512 character password distinct from the username")
+        if not configured_password and getpass.getpass("Confirm new admin password: ") != password:
+            raise SystemExit("Passwords do not match; no administrator created")
         db.add(Admin(username=username, password_hash=password_hash(password)))
         db.add(Audit(actor="bootstrap", action="admin.create", entity=username))
     print(f"Admin {username} created")

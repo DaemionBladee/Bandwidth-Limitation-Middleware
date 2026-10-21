@@ -68,6 +68,38 @@ class PolicyEdit(BaseModel):
     expected_revision: int | None = Field(default=None, gt=0)
 
 
+class DefaultPlanInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    spec: PolicySpec | None = None
+    policy_id: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def one_plan(self):
+        if (self.spec is None) == (self.policy_id is None):
+            raise ValueError("Provide either a policy specification or an existing policy ID")
+        return self
+
+
+class DefaultPlanEdit(DefaultPlanInput):
+    expected_revision: int = Field(ge=0)
+
+
+class AdminCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    username: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.@-]*$")
+    password: str = Field(min_length=12, max_length=512, repr=False)
+    confirm_password: str = Field(min_length=1, max_length=512, repr=False)
+    current_password: str = Field(min_length=1, max_length=512, repr=False)
+
+    @model_validator(mode="after")
+    def valid_password(self):
+        if self.password != self.confirm_password:
+            raise ValueError("New passwords must match")
+        if not self.password.strip() or self.password.casefold() == self.username.casefold():
+            raise ValueError("Choose a password distinct from the administrator username")
+        return self
+
+
 class UserCreate(BaseModel):
     username: str = Field(min_length=1, max_length=200, pattern=r"^\S+$")
 

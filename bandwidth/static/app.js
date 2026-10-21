@@ -13,6 +13,7 @@ let activeTab = 'overview', activeFilter = 'all', pageNumber = 1, chartMode = 'b
 let stream = null, streamVersion = 0, loggedIn = false, lastUpdated = null;
 let detailUserId = null, detailTab = 'usage', detailHistory = null, historyRequest = 0;
 let resetRequest = null, menuUserId = null, menuAnchor = null;
+let policyPurpose = 'policy', defaultChoice = null, auditDay = null;
 let displayZone = storage.get('timezone') || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 const pageSize = 25;
 const zoneSupport = new Map(), formatters = new Map(), offsets = new Map();
@@ -56,6 +57,7 @@ function toast(message, error = false) {
   const node = document.createElement('div'); node.className = `toast ${error ? 'error-toast' : ''}`;
   node.innerHTML = `${icon(error ? 'alert' : 'check')}<span>${esc(message)}</span><button aria-label="Dismiss notification">${icon('close')}</button>`;
   $('button', node).addEventListener('click', () => node.remove()); $('#toast-stack').append(node);
+  while ($('#toast-stack').children.length > 2) $('#toast-stack').firstElementChild.remove();
   setTimeout(() => node.remove(), 5500);
 }
 function openDialog(selector) {
@@ -150,17 +152,18 @@ async function enterApp() {
   setTab(location.hash.slice(1) || 'overview', false); updateClock(); connectStream();
 }
 function setTab(tab, push = true) {
-  if (!['overview', 'subscribers', 'policies', 'audit'].includes(tab)) tab = 'overview';
+  if (!['overview', 'subscribers', 'policies', 'audit', 'admins'].includes(tab)) tab = 'overview';
   activeTab = tab;
   $('#overview-tab').hidden = !['overview','subscribers'].includes(tab);
-  $('#policies-tab').hidden = tab !== 'policies'; $('#audit-tab').hidden = tab !== 'audit';
+  $('#policies-tab').hidden = tab !== 'policies'; $('#audit-tab').hidden = tab !== 'audit'; $('#admins-tab').hidden = tab !== 'admins';
   for (const id of ['overview-metrics','overview-charts','overview-operations']) $(`#${id}`).hidden = tab !== 'overview';
   $$('[data-tab]').forEach(button => button.classList.toggle('active', button.dataset.tab === tab));
   const labels = {
     overview: ['Overview','Network overview','Your subscribers, usage, and policies. All in sync.'],
     subscribers: ['Subscribers','Subscribers','Find a subscriber, manage their policy, and keep usage in view.'],
     policies: ['Policy library','Policy library','The right allowance and speeds for every subscriber.'],
-    audit: ['Change history','Change history','A clear record of what changed, when, and who changed it.']
+    audit: ['Change history','Change history','A clear record of what changed, when, and who changed it.'],
+    admins: ['Administrators','Administrator access','Individual accounts for the people managing your network.']
   };
   setText('#breadcrumb', labels[tab][0]); setText('#page-title', labels[tab][1]); setText('#page-description', labels[tab][2]);
   if (push && location.hash !== `#${tab}`) history.pushState(null, '', `#${tab}`);
@@ -177,7 +180,7 @@ function applySnapshot(data) {
   setText('#source-badge', `${data.status.accounting_source.toUpperCase()} ACCOUNTING`);
   setText('#accounting-mode', data.status.accounting_source.toUpperCase());
   $('#mock-usage').hidden = data.status.accounting_source !== 'mock';
-  renderMetrics(); renderUsers(); renderPolicies(); renderAudit(); renderTraffic(); renderWorkers();
+  renderMetrics(); renderUsers(); renderPolicies(); renderDefaultPlan(); renderAudit(); renderAdmins(); renderTraffic(); renderWorkers();
   if (detailUserId && $('#subscriber-dialog').open) {
     renderDetail();
     if (JSON.stringify(previousUser) !== JSON.stringify(userById(detailUserId)) || previousAudit !== data.audit[0]?.id) loadHistory(detailUserId);
@@ -252,15 +255,85 @@ function renderPolicies() {
   setText('#policy-count', `${policies.length} ${policies.length === 1 ? 'policy' : 'policies'}`);
   patchList($('#policy-grid'), list, p => p.id, policy => {
     const spec = policy.spec, schedule = spec.period_type === 'monthly' ? `Day ${spec.monthly_day} · clamps to month end` : spec.period_type === 'weekly' ? ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][spec.weekly_day] : spec.period_type === 'custom' ? `${date(spec.custom_start,spec.timezone)} → ${date(spec.custom_end,spec.timezone)}` : 'Every day';
-    return `<article class="policy-card"><div class="card-top">${badge(spec.enabled ? 'ENABLED' : 'DISABLED',spec.enabled ? '' : 'neutral')}<small>Version ${policy.revision} · #${policy.id}</small></div><h3>${esc(spec.name)}</h3><div class="quota">${gb(spec.quota_bytes)}<small>/ ${esc(spec.period_type)}</small></div><div class="profile-row"><span><b></b>Normal ↓ / ↑</span><strong>${num(spec.normal_download_kbps/1000)} / ${num(spec.normal_upload_kbps/1000)} Mbps</strong></div><div class="profile-row limited"><span><b></b>Limited ↓ / ↑</span><strong>${num(spec.limited_download_kbps/1000)} / ${num(spec.limited_upload_kbps/1000)} Mbps</strong></div><p class="schedule">${icon('globe')}<span>${esc(spec.timezone)} · ${esc(spec.reset_time.slice(0,5))}<br>${esc(schedule)}</span></p><button class="secondary" data-edit="${policy.id}">Edit policy ${icon('arrow-right')}</button></article>`;
+    return `<article class="policy-card"><div class="card-top">${badge(spec.enabled ? 'ENABLED' : 'DISABLED',spec.enabled ? '' : 'neutral')}<small>Version ${policy.revision} · #${policy.id}</small></div><h3>${esc(spec.name)}</h3><div class="quota">${gb(spec.quota_bytes)}<small>/ ${esc(spec.period_type)}</small></div><div class="profile-row"><span><b></b>Normal ↓ / ↑</span><strong>${num(spec.normal_download_kbps/1000)} / ${num(spec.normal_upload_kbps/1000)} Mbps</strong></div><div class="profile-row limited"><span><b></b>Limited ↓ / ↑</span><strong>${num(spec.limited_download_kbps/1000)} / ${num(spec.limited_upload_kbps/1000)} Mbps</strong></div><p class="schedule">${icon('globe')}<span>${esc(spec.timezone)} · ${esc(spec.reset_time.slice(0,5))}<br>${esc(schedule)}</span></p><div class="policy-card-actions"><button class="secondary" data-edit="${policy.id}">Edit policy ${icon('arrow-right')}</button>${snapshot.default_plan?.policy_id === policy.id ? badge('NEW SUBSCRIBER DEFAULT') : `<button class="text-button" data-use-default="${policy.id}">Use as default</button>`}</div></article>`;
   });
   if (!list.length) $('#policy-grid').innerHTML = `<div class="empty-state"><span class="empty-icon">${icon('layers')}</span><h3>${policies.length ? 'No matching policies' : 'Create your first policy'}</h3><p>${policies.length ? 'Try a different policy name or timezone.' : 'Define a quota, speed profiles, and a reset schedule.'}</p><button class="secondary" data-new-policy>New policy</button></div>`;
 }
-const actionNames = {'policy.create':'Policy created','policy.edit':'Policy updated','user.create':'Subscriber added','assignment.change':'Assignment changed','usage.reset':'Subscriber usage reset','enforcement.retry':'Enforcement reconciliation requested','mock.accounting':'Mock accounting submitted','admin.create':'Administrator created','assignment.create':'Assignment created'};
+const actionNames = {'policy.create':'Policy created','policy.edit':'Policy updated','user.create':'Subscriber added','user.discover':'Subscriber discovered','assignment.change':'Assignment changed','assignment.default':'Default plan assigned','usage.reset':'Subscriber usage reset','enforcement.retry':'Enforcement reconciliation requested','mock.accounting':'Mock accounting submitted','admin.create':'Administrator created','assignment.create':'Assignment created','default_plan.create':'Default plan created','default_plan.edit':'Default plan updated','default_plan.delete':'Default plan removed'};
+const auditCategory = action => action.startsWith('policy') || action.startsWith('default_plan') ? 'plans' : action.startsWith('assignment') ? 'assignments' : action.startsWith('user') ? 'subscribers' : action.startsWith('admin') ? 'security' : action.startsWith('enforcement') ? 'enforcement' : 'usage';
+const categoryNames = {plans:'Plans & defaults',subscribers:'Subscribers',assignments:'Assignments',usage:'Usage & resets',enforcement:'Enforcement',security:'Administrator access'};
+const categoryIcons = {plans:'layers',subscribers:'users',assignments:'user-plus',usage:'reset',enforcement:'sync',security:'shield'};
+const fieldNames = {name:'Plan name',username:'Username',quota_bytes:'Data allowance',normal_download_kbps:'Normal download',normal_upload_kbps:'Normal upload',limited_download_kbps:'Limited download',limited_upload_kbps:'Limited upload',period_type:'Quota period',timezone:'Policy timezone',reset_time:'Local reset time',monthly_day:'Day of month',weekly_day:'Day of week',custom_start:'Custom start',custom_end:'Custom end',repeat_interval_seconds:'Repeat interval',expiry_action:'Expiry action',enabled:'Enabled',application:'Application timing',policy_id:'Assigned plan',policy_name:'Plan name',effective_from:'Effective from',used_bytes:'Allowance used',upload_bytes:'Upload used',download_bytes:'Download used',next_reset:'Next scheduled reset',reason:'Reason',default_status:'Default for new subscribers',generation:'Reconciliation attempt'};
+function localDay(value) {
+  const parts = formatter(`day:${displayZone}`,{timeZone:displayZone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(value));
+  const part = key => parts.find(p => p.type === key).value;
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+function auditObject(a, value, before) {
+  if (!value) return {};
+  if (a.action === 'usage.reset') return before ? {used_bytes:value.used_bytes} : {used_bytes:value.used_bytes,reason:value.reason,next_reset:value.next_reset};
+  if (value.spec) return {...value.spec,...(a.action.startsWith('default_plan') ? {default_status:'Selected'} : {})};
+  if (a.action === 'default_plan.delete' && !before) return {default_status:'Removed'};
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !['id','revision','policy_revision','period_id','version_id','reset_id','affected_users','configured'].includes(key) && !/password|token|secret|csrf/i.test(key)));
+}
+function auditValue(key,value) {
+  if (value === null || value === undefined || value === '') return 'Not set';
+  if (key.endsWith('_bytes')) return bytes(value);
+  if (key.endsWith('_kbps')) return `${num(value/1000)} Mbps`;
+  if (key === 'policy_id') return policies.find(p => p.id === value)?.spec.name || `Policy #${value}`;
+  if (key === 'weekly_day') return ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][value];
+  if (key === 'reset_time') return String(value).slice(0,5);
+  if (key === 'application') return value === 'immediate' ? 'Immediately' : 'Next period';
+  if (key === 'repeat_interval_seconds') return `${num(value)} seconds`;
+  if (['effective_from','effective_at','custom_start','custom_end','next_reset','starts_at','ends_at'].includes(key)) return date(value,displayZone,true);
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (Array.isArray(value)) return value.map(v => typeof v === 'object' ? Object.values(v).join(' · ') : v).join(', ');
+  if (typeof value === 'object') return Object.entries(value).map(([k,v]) => `${k.replaceAll('_',' ')}: ${auditValue(k,v)}`).join(' · ');
+  return String(value).replaceAll('_',' ');
+}
+function auditChanges(a) {
+  const before = auditObject(a,a.before,true), after = auditObject(a,a.after,false);
+  return [...new Set([...Object.keys(before),...Object.keys(after)])].filter(key => JSON.stringify(before[key] ?? null) !== JSON.stringify(after[key] ?? null)).map(key => ({key,label:fieldNames[key] || key.replaceAll('_',' '),before:auditValue(key,before[key]),after:auditValue(key,after[key])}));
+}
 function renderAudit() {
-  const query = $('#audit-search').value.trim().toLowerCase(), rows = snapshot.audit.filter(a => `${a.actor} ${a.action} ${a.entity} ${a.after?.reason || ''}`.toLowerCase().includes(query));
-  patchList($('#audit-list'), rows, a => a.id, a => `<article class="audit-item"><span class="audit-icon">${icon(a.action === 'usage.reset' ? 'reset' : a.action.startsWith('policy') ? 'layers' : 'history')}</span><div><strong>${esc(actionNames[a.action] || a.action)}</strong><p>${esc(a.actor)} · ${esc(a.entity)}${a.after?.reason ? ` · ${esc(a.after.reason)}` : ''}</p><details><summary>View change</summary><pre>${esc(JSON.stringify({before:a.before,after:a.after},null,2))}</pre></details></div><time datetime="${esc(a.created_at)}">${date(a.created_at)}</time></article>`, a => JSON.stringify([a,displayZone]));
-  if (!rows.length) $('#audit-list').innerHTML = '<div class="empty-state"><h3>No matching changes</h3><p>Administrative actions will appear here as they happen.</p></div>';
+  const all = snapshot.audit, query = $('#audit-search').value.trim().toLowerCase();
+  const category = $('#audit-category').value, actor = $('#audit-actor').value;
+  const actorSelect = $('#audit-actor'), actors = [...new Set(all.map(a => a.actor))].sort();
+  if (actorSelect.dataset.values !== JSON.stringify(actors)) {
+    actorSelect.replaceChildren(new Option('Everyone','all'),...actors.map(name => new Option(name,name))); actorSelect.value = actors.includes(actor) ? actor : 'all'; actorSelect.dataset.values = JSON.stringify(actors);
+  }
+  setText('#audit-total',all.length); setText('#audit-actors',actors.length); setText('#audit-chart-note',`Latest 100 events · ${displayZone}`);
+  const today = localDay(new Date()), days = Array.from({length:7},(_,i) => new Date(new Date(`${today}T12:00:00Z`).getTime()-(6-i)*86400000).toISOString().slice(0,10));
+  const counts = days.map(day => ({day,count:all.filter(a => localDay(a.created_at) === day).length})), max = Math.max(...counts.map(d=>d.count),1);
+  patchList($('#audit-chart'),counts,d=>d.day,d=>`<button class="audit-day ${auditDay === d.day ? 'selected' : ''}" data-audit-day="${d.day}" aria-label="${d.day}: ${d.count} changes" aria-pressed="${auditDay === d.day}" title="${d.day}: ${d.count} changes"><strong>${d.count}</strong><span><i></i></span><small>${d.day.slice(5)}</small></button>`,d=>JSON.stringify([d,auditDay]));
+  counts.forEach(d => { $(`#audit-chart [data-key="${d.day}"] i`).style.height = `${Math.max(d.count/max*100,d.count ? 8 : 2)}%`; });
+  const rows = all.filter(a => (category === 'all' || auditCategory(a.action) === category) && (actorSelect.value === 'all' || a.actor === actorSelect.value) && (!auditDay || localDay(a.created_at) === auditDay) && `${a.actor} ${a.action} ${actionNames[a.action] || ''} ${a.entity_label || a.entity} ${a.after?.spec?.name || a.before?.spec?.name || ''} ${a.after?.reason || ''} ${auditChanges(a).map(c=>`${c.label} ${c.before} ${c.after}`).join(' ')}`.toLowerCase().includes(query));
+  setText('#audit-results',`${rows.length} ${rows.length === 1 ? 'CHANGE' : 'CHANGES'}`);
+  patchList($('#audit-list'), rows, a => a.id, a => {
+    const changes = auditChanges(a), category = auditCategory(a.action), day = localDay(a.created_at);
+    const affected = a.after?.affected_users;
+    const context = a.action.startsWith('default_plan') ? 'Applies to future subscribers. Existing allowances stay in place.' : affected ? `${affected.length} assigned subscriber${affected.length===1?'':'s'} · ${auditValue('application',a.after.application)}` : a.after?.reason || '';
+    const subject = a.after?.username || a.after?.spec?.name || a.before?.spec?.name || a.entity_label || a.entity;
+    return `<article class="audit-item"><span class="audit-icon ${category}">${icon(categoryIcons[category])}</span><div class="audit-content"><div class="audit-card-heading"><div><strong>${esc(actionNames[a.action] || a.action.replaceAll('.',' '))}</strong><p class="audit-subject">${esc(subject)}</p></div>${badge(categoryNames[category],'neutral')}</div><div class="audit-meta"><span class="audit-actor-avatar">${esc(initials(a.actor))}</span><span>${esc(a.actor)}</span><i></i><time datetime="${esc(a.created_at)}">${date(a.created_at,displayZone,true)}</time></div>${context ? `<p class="audit-context">${esc(context)}</p>` : ''}${changes.length ? `<details class="change-details"><summary>${icon('chevron-down')}View ${changes.length} ${changes.length===1?'change':'changes'}</summary><div class="change-grid"><div class="change-grid-heading"><span>Parameter</span><span>Before</span><span>After</span></div>${changes.map(c=>`<div class="change-row"><strong>${esc(c.label)}</strong><span class="old-value">${esc(c.before)}</span><span class="new-value">${esc(c.after)}</span></div>`).join('')}</div></details>` : '<p class="audit-context">Action recorded successfully.</p>'}<span class="audit-day-marker">${day}</span></div></article>`;
+  }, a => JSON.stringify([a,displayZone,policies.map(p=>[p.id,p.spec.name])]));
+  if (!rows.length) $('#audit-list').innerHTML = '<div class="empty-state"><span class="empty-icon">'+icon('history')+'</span><h3>No matching changes</h3><p>Try another category, person, day, or search term.</p></div>';
+}
+function renderDefaultPlan() {
+  const plan = snapshot.default_plan, spec = plan?.spec;
+  const html = `<div class="default-plan-heading"><span class="default-plan-symbol">${icon('layers')}</span><div><p class="eyebrow">AUTOMATIC ONBOARDING</p><h2>Default quota plan</h2><p>One plan to welcome every new subscriber. A separate allowance for each person.</p></div>${badge(spec ? spec.enabled ? 'AUTOMATIC ASSIGNMENT ON' : 'AUTOMATIC ASSIGNMENT PAUSED' : 'NOT CONFIGURED', spec?.enabled ? '' : 'neutral')}</div>${spec ? `<div class="default-plan-values"><div><small>Plan</small><strong>${esc(spec.name)}</strong></div><div><small>Allowance</small><strong>${bytes(spec.quota_bytes)} <span>/ ${esc(spec.period_type)}</span></strong></div><div><small>Normal ↓ / ↑</small><strong>${num(spec.normal_download_kbps/1000)} / ${num(spec.normal_upload_kbps/1000)} Mbps</strong></div><div><small>Limited ↓ / ↑</small><strong>${num(spec.limited_download_kbps/1000)} / ${num(spec.limited_upload_kbps/1000)} Mbps</strong></div></div><p class="default-plan-schedule">${icon('globe')} ${esc(spec.timezone)} · ${esc(spec.reset_time.slice(0,5))} · policy version ${plan.policy_revision}</p>` : '<p class="default-empty">Create a default plan, or choose “Use as default” on a policy below. New accounting identities can then be registered automatically.</p>'}<div class="default-plan-footer"><p>Applied at registration or first accounting record. Existing subscribers keep their assignments.</p><div>${spec ? '<button class="secondary" data-edit-default>Edit default plan</button><button class="text-button danger-text" data-remove-default>Remove default</button>' : '<button class="primary" data-create-default>'+icon('plus')+'Create default plan</button>'}</div></div>`;
+  const card = $('#default-plan-card');
+  if (card.dataset.signature !== html) { card.innerHTML = html; card.dataset.signature = html; }
+}
+function chooseDefault(policyId = null) {
+  const plan = snapshot.default_plan;
+  defaultChoice = {policyId,revision:plan.revision,configured:plan.configured};
+  setText('#default-choice-title',policyId ? 'Use this plan as the default?' : 'Remove the default plan?');
+  setText('#default-choice-description',policyId ? `New subscribers will receive ${policies.find(p=>p.id===policyId).spec.name}. This includes identities first discovered in the configured accounting feed.` : 'Automatic assignment and first-seen accounting registration will stop. The policy stays in your library and existing subscribers keep their allowance.');
+  setText('#default-choice-confirm',policyId ? 'Set default plan' : 'Remove default');
+  openDialog('#default-choice-dialog');
+}
+function renderAdmins() {
+  patchList($('#admin-list'),snapshot.admins || [],a=>a.id,a=>`<article class="admin-account"><span class="avatar">${esc(initials(a.username))}</span><div><strong>${esc(a.username)}</strong><small>Full workspace administrator</small></div>${badge(a.username === $('#admin-name').textContent ? 'YOU' : 'ADMINISTRATOR','neutral')}</article>`);
 }
 function renderWorkers() {
   const labels = {ingest:['Accounting ingestion','database'],evaluate:['Quota decisions','gauge'],rollover:['Period rollover','reset'],reconcile:['Enforcement checks','shield']};
@@ -298,9 +371,10 @@ function populateZoneSelect(select, query = '', selected = select.value || displ
   select.replaceChildren(...list.map(zone => { const option = document.createElement('option'); option.value = zone; option.textContent = zoneLabel(zone); return option; }));
   select.value = selected; updateClock();
 }
-function editPolicy(id) {
+function editPolicy(id, purpose = 'policy') {
+  policyPurpose = purpose;
   const form = $('#policy-form'); form.reset(); form.elements.id.value = ''; form.revision.value = ''; $('#policy-zone-search').value = '';
-  const policy = policies.find(p => p.id === id);
+  const policy = purpose === 'default' && snapshot.default_plan?.configured ? {id:snapshot.default_plan.policy_id,revision:snapshot.default_plan.revision,spec:snapshot.default_plan.spec} : policies.find(p => p.id === id);
   if (policy) {
     const spec = policy.spec;
     for (const name of ['name','period_type','reset_time','monthly_day','weekly_day','custom_start','custom_end','repeat_interval_seconds','expiry_action']) form.elements[name].value = spec[name] ?? '';
@@ -309,14 +383,18 @@ function editPolicy(id) {
     form.enabled.checked = spec.enabled; form.elements.id.value = id; form.revision.value = policy.revision;
   }
   populateZoneSelect(form.timezone,'',policy?.spec.timezone || displayZone);
-  setText('#policy-dialog-title',policy ? 'Edit policy' : 'Create policy'); scheduleFields(); openDialog('#policy-dialog'); updateClock();
+  setText('#policy-dialog-title',purpose === 'default' ? policy ? 'Edit default quota plan' : 'Create default quota plan' : policy ? 'Edit policy' : 'Create policy');
+  setText('#policy-dialog-description',purpose === 'default' ? 'Automatically give new subscribers their own allowance.' : 'Define an allowance and the speeds that come with it.');
+  $('#default-plan-scope').hidden = purpose !== 'default'; $$('[data-policy-activation]').forEach(node=>node.hidden = purpose === 'default');
+  setText('#policy-enabled-note',purpose === 'default' ? 'Disabling pauses automatic assignment and new accounting discovery.' : 'Disabling requests the normal speed profile.');
+  scheduleFields(); openDialog('#policy-dialog'); updateClock();
 }
 function scheduleFields() {
   const custom = $('#policy-form').period_type.value === 'custom';
   $('#monthly-field').hidden = $('#policy-form').period_type.value !== 'monthly'; $('#weekly-field').hidden = $('#policy-form').period_type.value !== 'weekly';
   $$('[data-custom]').forEach(node => node.hidden = !custom); $$('[data-calendar]').forEach(node => node.hidden = custom);
 }
-function newUser() { $('#user-form').reset(); openDialog('#user-dialog'); }
+function newUser() { $('#user-form').reset(); const plan = snapshot.default_plan; setText('#new-user-plan-note',plan?.spec?.enabled ? `The default plan “${plan.spec.name}” will be assigned automatically. Use the exact accounting username.` : 'Use the exact identity reported by your accounting source. You can assign a policy in the next step.'); openDialog('#user-dialog'); }
 function assignUser(id) {
   const user = userById(id); if (!user) return;
   if (!policies.length) { toast('Create a policy before assigning a subscriber.',true); editPolicy(null); return; }
@@ -396,12 +474,15 @@ formHandler('#policy-form',async form => {
   const values = Object.fromEntries(new FormData(form)), custom = values.period_type === 'custom';
   const spec = {name:values.name,enabled:form.enabled.checked,quota_bytes:Math.round(Number(values.quota_gb)*1e9),timezone:values.timezone,period_type:values.period_type,reset_time:values.reset_time || '00:00',monthly_day:Number(values.monthly_day)||1,weekly_day:Number(values.weekly_day)||0,custom_start:custom ? values.custom_start || null : null,custom_end:custom ? values.custom_end || null : null,repeat_interval_seconds:custom && values.repeat_interval_seconds ? Number(values.repeat_interval_seconds) : null,expiry_action:custom ? values.expiry_action || null : null};
   for (const name of ['normal_download','normal_upload','limited_download','limited_upload']) spec[`${name}_kbps`] = Math.round(Number(values[name])*1000);
-  await api(values.id ? `/policies/${values.id}` : '/policies',{method:values.id ? 'PUT' : 'POST',body:JSON.stringify(values.id ? {spec,expected_revision:Number(values.revision),application:values.application} : spec)});
+  if (policyPurpose === 'default') {
+    const editing = Boolean(values.id);
+    await api('/default-plan',{method:editing ? 'PUT' : 'POST',body:JSON.stringify(editing ? {spec,expected_revision:Number(values.revision)} : {spec})});
+  } else await api(values.id ? `/policies/${values.id}` : '/policies',{method:values.id ? 'PUT' : 'POST',body:JSON.stringify(values.id ? {spec,expected_revision:Number(values.revision),application:values.application} : spec)});
   $('#policy-dialog').close(); toast('Policy saved. Your change is recorded in history.'); await syncSnapshot();
 });
 formHandler('#user-form',async form => {
   const user = await api('/users',{method:'POST',body:JSON.stringify({username:form.username.value})});
-  $('#user-dialog').close(); await syncSnapshot(); toast('Subscriber added'); if (policies.length) assignUser(user.id);
+  $('#user-dialog').close(); await syncSnapshot(); toast(user.default_assigned ? 'Subscriber added with the default quota plan' : 'Subscriber added'); if (!user.default_assigned && policies.length) assignUser(user.id);
 });
 formHandler('#assignment-form',async form => {
   await api(`/users/${form.user_id.value}/assignment`,{method:'PUT',body:JSON.stringify({policy_id:Number(form.policy_id.value),enabled:form.enabled.checked,application:form.application.value})});
@@ -427,6 +508,17 @@ formHandler('#preferences-form',async () => {
   if (zoneChanged) { disconnectStream(); try { await syncSnapshot(); } finally { connectStream(); } }
   toast(`Display timezone set to ${displayZone}`);
 });
+formHandler('#default-choice-form',async () => {
+  const choice = defaultChoice;
+  await api(choice.policyId ? '/default-plan' : `/default-plan?expected_revision=${choice.revision}`,{method:choice.policyId ? choice.configured ? 'PUT' : 'POST' : 'DELETE',...(choice.policyId ? {body:JSON.stringify({policy_id:choice.policyId,...(choice.configured ? {expected_revision:choice.revision} : {})})} : {})});
+  $('#default-choice-dialog').close(); toast(choice.policyId ? 'Default plan saved for new subscribers' : 'Default removed. Existing subscribers are unchanged.'); await syncSnapshot();
+});
+formHandler('#admin-form',async form => {
+  await api('/admins',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(form)))});
+  $('#admin-dialog').close(); toast('Administrator created. They can now sign in with their own account.'); await syncSnapshot();
+});
+$('#admin-dialog').addEventListener('close',()=>$('#admin-form').reset());
+$('#new-admin').addEventListener('click',()=>{ $('#admin-form').reset(); openDialog('#admin-dialog'); });
 $('#policy-form').period_type.addEventListener('change',scheduleFields);
 $('#policy-zone-search').addEventListener('input',event => populateZoneSelect($('#policy-timezone'),event.target.value));
 $('#display-zone-search').addEventListener('input',event => populateZoneSelect($('#display-timezone'),event.target.value));
@@ -435,6 +527,8 @@ $('#assignment-form').policy_id.addEventListener('change',assignmentPreview);
 $('#subscriber-search').addEventListener('input',() => { pageNumber = 1; renderUsers(); });
 $('#subscriber-sort').addEventListener('change',() => { pageNumber = 1; renderUsers(); });
 $('#policy-search').addEventListener('input',renderPolicies); $('#audit-search').addEventListener('input',renderAudit);
+$('#audit-category').addEventListener('change',renderAudit); $('#audit-actor').addEventListener('change',renderAudit);
+$('#clear-audit-filters').addEventListener('click',()=>{ $('#audit-search').value=''; $('#audit-category').value='all'; $('#audit-actor').value='all'; auditDay=null; renderAudit(); });
 $('#previous-page').addEventListener('click',() => { pageNumber--; renderUsers(); }); $('#next-page').addEventListener('click',() => { pageNumber++; renderUsers(); });
 $('#clear-filters').addEventListener('click',() => { $('#subscriber-search').value = ''; activeFilter = 'all'; pageNumber = 1; renderUsers(); });
 $('#preferences').addEventListener('click',() => { $('#display-zone-search').value = ''; $('#appearance-select').value = document.documentElement.dataset.theme; populateZoneSelect($('#display-timezone'),'',displayZone); openDialog('#preferences-dialog'); updateClock(); });
@@ -459,6 +553,11 @@ document.addEventListener('click',event => {
   if (button.dataset.day) { selectedDay = selectedDay === button.dataset.day ? null : button.dataset.day; renderTraffic(); }
   if (button.dataset.edit) editPolicy(Number(button.dataset.edit));
   if (button.hasAttribute('data-new-policy')) editPolicy(null);
+  if (button.hasAttribute('data-create-default')) editPolicy(null,'default');
+  if (button.hasAttribute('data-edit-default')) editPolicy(snapshot.default_plan.policy_id,'default');
+  if (button.hasAttribute('data-remove-default')) chooseDefault();
+  if (button.dataset.useDefault) chooseDefault(Number(button.dataset.useDefault));
+  if (button.dataset.auditDay) { auditDay = auditDay === button.dataset.auditDay ? null : button.dataset.auditDay; renderAudit(); }
   if (button.dataset.detail) showHistory(Number(button.dataset.detail));
   if (button.dataset.menu) showMenu(Number(button.dataset.menu),button);
   if (button.dataset.detailTab) { detailTab = button.dataset.detailTab; renderHistory(); }

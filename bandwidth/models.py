@@ -36,6 +36,14 @@ class PolicyVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class DefaultPlan(Base):
+    __tablename__ = "default_plan"
+    __table_args__ = (CheckConstraint("id = 1"),)
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    policy_id: Mapped[int | None] = mapped_column(ForeignKey("policies.id"))
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(primary_key=True)

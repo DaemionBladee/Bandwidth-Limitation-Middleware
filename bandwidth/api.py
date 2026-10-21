@@ -1,16 +1,18 @@
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
-from bandwidth.auth import COOKIE, digest, login, require_admin
+from bandwidth.auth import COOKIE, confirm_admin_password, digest, login, password_hash, require_admin
 from bandwidth.config import settings
 from bandwidth.dashboard import TIMEZONES, dashboard_snapshot, event_response
 from bandwidth.db import transaction, utcnow
+from bandwidth.defaults import default_view, lock_default, provisioning_version, register
 from bandwidth.engine import (
     UsageResetConflict,
     assign,
@@ -21,6 +23,7 @@ from bandwidth.engine import (
     reset_usage,
 )
 from bandwidth.models import (
+    Admin,
     AdminSession,
     Assignment,
     Audit,
@@ -37,7 +40,10 @@ from bandwidth.models import (
 )
 from bandwidth.queue import enqueue
 from bandwidth.schemas import (
+    AdminCreate,
     AssignmentInput,
+    DefaultPlanEdit,
+    DefaultPlanInput,
     Measurement,
     PolicyEdit,
     PolicySpec,
@@ -74,6 +80,13 @@ async def conflict(request, exc):
 @app.exception_handler(ValueError)
 async def invalid(request, exc):
     return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request, exc):
+    # Pydantic's default error includes the rejected input, potentially passwords.
+    errors = [{key: error[key] for key in ("loc", "msg", "type")} for error in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": errors})
 
 
 @app.exception_handler(UsageResetConflict)
@@ -144,6 +157,23 @@ def sign_out(request: Request, response: Response, actor=AdminOnly):
     return {"ok": True}
 
 
+@app.get("/api/admins")
+def administrators(actor=AdminOnly):
+    with transaction() as db:
+        return [{"id": a.id, "username": a.username} for a in db.scalars(select(Admin).order_by(Admin.id))]
+
+
+@app.post("/api/admins", status_code=201)
+def create_administrator(body: AdminCreate, request: Request, actor=AdminOnly):
+    actor = confirm_admin_password(request, body.current_password)
+    with transaction() as db:
+        admin = Admin(username=body.username, password_hash=password_hash(body.password))
+        db.add(admin)
+        db.flush()
+        audit(db, actor, "admin.create", f"admin:{admin.id}", after={"username": admin.username})
+        return {"id": admin.id, "username": admin.username}
+
+
 def audit(db, actor, action, entity, before=None, after=None):
     db.add(Audit(actor=actor, action=action, entity=entity, before=before, after=after))
 
@@ -184,10 +214,80 @@ def create_policy(spec: PolicySpec, actor=AdminOnly):
         return {"id": policy.id, "revision": 1}
 
 
+@app.get("/api/default-plan")
+def get_default_plan(actor=AdminOnly):
+    with transaction() as db:
+        return default_view(db)
+
+
+def save_default(db, body, actor, create=False):
+    row = lock_default(db)
+    if create and row.policy_id is not None:
+        raise HTTPException(409, "A default plan already exists; edit or remove it first")
+    if not create and row.policy_id is None:
+        raise HTTPException(404, "No default plan is configured")
+    if not create and row.revision != body.expected_revision:
+        raise HTTPException(409, "The default plan changed; review the latest version")
+    before = default_view(db)
+    if body.policy_id:
+        policy = db.scalar(select(Policy).where(Policy.id == body.policy_id).with_for_update())
+        if not policy:
+            raise HTTPException(404, "Policy not found")
+        latest_version(db, policy.id)
+    elif create:
+        policy = Policy(name=body.spec.name)
+        db.add(policy)
+        db.flush()
+        db.add(PolicyVersion(policy_id=policy.id, revision=1, spec=body.spec.model_dump(mode="json")))
+    else:
+        policy = db.scalar(select(Policy).where(Policy.id == row.policy_id).with_for_update())
+        version = latest_version(db, policy.id)
+        policy.name = body.spec.name
+        db.add(
+            PolicyVersion(
+                policy_id=policy.id, revision=version.revision + 1, spec=body.spec.model_dump(mode="json")
+            )
+        )
+    row.policy_id, row.revision = policy.id, row.revision + 1
+    db.flush()
+    after = default_view(db)
+    audit(db, actor, "default_plan.create" if create else "default_plan.edit", "default-plan", before, after)
+    return after
+
+
+@app.post("/api/default-plan", status_code=201)
+def create_default_plan(body: DefaultPlanInput, actor=AdminOnly):
+    with transaction() as db:
+        return save_default(db, body, actor, create=True)
+
+
+@app.put("/api/default-plan")
+def update_default_plan(body: DefaultPlanEdit, actor=AdminOnly):
+    with transaction() as db:
+        return save_default(db, body, actor)
+
+
+@app.delete("/api/default-plan")
+def remove_default_plan(expected_revision: int = Query(ge=0), actor=AdminOnly):
+    with transaction() as db:
+        row = lock_default(db)
+        if row.policy_id is None:
+            raise HTTPException(404, "No default plan is configured")
+        if row.revision != expected_revision:
+            raise HTTPException(409, "The default plan changed; review the latest version")
+        before = default_view(db)
+        row.policy_id, row.revision = None, row.revision + 1
+        db.flush()
+        after = default_view(db)
+        audit(db, actor, "default_plan.delete", "default-plan", before, after)
+        return after
+
+
 @app.put("/api/policies/{policy_id}")
 def edit_policy(policy_id: int, body: PolicyEdit, actor=AdminOnly):
     now = utcnow()
     with transaction() as db:
+        default = lock_default(db)
         policy = db.scalar(select(Policy).where(Policy.id == policy_id).with_for_update())
         if not policy:
             raise HTTPException(404, "Policy not found")
@@ -198,6 +298,8 @@ def edit_policy(policy_id: int, body: PolicyEdit, actor=AdminOnly):
         new = PolicyVersion(policy_id=policy_id, revision=old.revision + 1, spec=spec)
         db.add(new)
         policy.name = body.spec.name
+        if default.policy_id == policy_id:
+            default.revision += 1
         db.flush()
         ids = db.scalars(
             select(Assignment.user_id)
@@ -230,11 +332,11 @@ def edit_policy(policy_id: int, body: PolicyEdit, actor=AdminOnly):
 @app.post("/api/users", status_code=201)
 def create_user(body: UserCreate, actor=AdminOnly):
     with transaction() as db:
-        user = User(username=body.username)
-        db.add(user)
-        db.flush()
-        audit(db, actor, "user.create", f"user:{user.id}", after=body.model_dump())
-        return {"id": user.id, "username": user.username}
+        version = provisioning_version(db)
+        user, created = register(db, body.username, actor, utcnow(), version)
+        if not created:
+            raise HTTPException(409, "A subscriber with this username already exists")
+        return {"id": user.id, "username": user.username, "default_assigned": version is not None}
 
 
 @app.put("/api/users/{user_id}/assignment")
@@ -425,7 +527,11 @@ def mock_accounting(body: Measurement, actor=AdminOnly):
         raise HTTPException(422, "Future accounting timestamps are not accepted")
     with transaction() as db:
         if not db.scalar(select(User).where(User.username == body.username)):
-            raise HTTPException(422, "Create this accounting user first")
+            plan = default_view(db)
+            if not plan["configured"] or not plan["spec"]["enabled"]:
+                raise HTTPException(
+                    422, "Create this accounting user first or configure an enabled default plan"
+                )
         db.add(Inbox(record=body.model_dump(mode="json")))
         audit(db, actor, "mock.accounting", f"record:{body.record_id}", after={"username": body.username})
     return {"status": "queued", "source": "mock"}
@@ -461,12 +567,22 @@ def status(actor=AdminOnly):
 
 
 def audit_views(db):
+    user_names = dict(db.execute(select(User.id, User.username)).all())
+    policy_names = dict(db.execute(select(Policy.id, Policy.name)).all())
+
+    def label(entity):
+        kind, _, key = entity.partition(":")
+        if key.isdigit():
+            return {"user": user_names, "policy": policy_names}.get(kind, {}).get(int(key), entity)
+        return "Default quota plan" if entity == "default-plan" else entity
+
     return [
         {
             "id": a.id,
             "actor": a.actor,
             "action": a.action,
             "entity": a.entity,
+            "entity_label": label(a.entity),
             "before": a.before,
             "after": a.after,
             "created_at": a.created_at,

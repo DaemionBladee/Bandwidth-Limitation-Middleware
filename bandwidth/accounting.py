@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from bandwidth.config import settings
 from bandwidth.db import utcnow
+from bandwidth.defaults import discover
 from bandwidth.engine import effective_assignment, ensure_period, evaluate, lock_user, quota_window
 from bandwidth.models import AccountingRecord, Checkpoint, Inbox, Period, PolicyVersion, User
 from bandwidth.schemas import Measurement, PolicySpec
@@ -36,14 +37,23 @@ class MockAccounting:
 
 def radius_measurement(raw):
     """NAS input = subscriber upload, NAS output = subscriber download; explicit event ID is required."""
+    start = raw.get("Acct-Status-Type") in ("Start", 1, "1")
+
+    def counter(name):
+        # Start commonly has no counters. It can still discover the subscriber
+        # immediately; missing interim/stop counters must never invent a reset.
+        if name not in raw and not start:
+            raise ValueError(f"RADIUS accounting measurement is missing {name}")
+        return int(raw.get(name, 0))
+
     return Measurement(
         record_id=raw["record_id"],
         username=raw["User-Name"],
         session_id=raw.get("Acct-Unique-Session-Id") or raw["Acct-Session-Id"],
         observed_at=datetime.fromtimestamp(raw["Event-Timestamp"], UTC),
         kind="cumulative",
-        upload=int(raw["Acct-Input-Octets"]) + (int(raw.get("Acct-Input-Gigawords", 0)) << 32),
-        download=int(raw["Acct-Output-Octets"]) + (int(raw.get("Acct-Output-Gigawords", 0)) << 32),
+        upload=counter("Acct-Input-Octets") + (int(raw.get("Acct-Input-Gigawords", 0)) << 32),
+        download=counter("Acct-Output-Octets") + (int(raw.get("Acct-Output-Gigawords", 0)) << 32),
     )
 
 
@@ -120,7 +130,8 @@ def ingest_record(db, source, measurement: Measurement, now=None):
     fingerprint = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
     user = db.scalar(select(User).where(User.username == measurement.username))
     if not user:
-        raise ValueError(f"Accounting user is not registered: {measurement.username}")
+        discover(db, [measurement], source, now)
+        user = db.scalar(select(User).where(User.username == measurement.username))
     lock_user(db, user.id)
     existing = db.scalar(
         select(AccountingRecord).where(
@@ -200,6 +211,7 @@ def ingest_batch(db, adapter=None, limit=250):
     db.execute(insert(Checkpoint).values(source=adapter.name, cursor={}).on_conflict_do_nothing())
     checkpoint = db.scalar(select(Checkpoint).where(Checkpoint.source == adapter.name).with_for_update())
     records, cursor = adapter.fetch(db, checkpoint.cursor, limit)
+    discover(db, records, adapter.name, utcnow())
     # A stable lock order prevents deadlocks between a multi-user batch and policy edits.
     names = {r.username for r in records}
     for user_id in db.scalars(select(User.id).where(User.username.in_(names)).order_by(User.id)):

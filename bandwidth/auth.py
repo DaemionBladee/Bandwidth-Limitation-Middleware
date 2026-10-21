@@ -97,3 +97,38 @@ def login(request, username, password):
     if not result:
         raise HTTPException(401, "Invalid admin credentials")
     return result
+
+
+def confirm_admin_password(request, password):
+    """Sensitive account creation requires the acting human's session and password."""
+    check_origin(request)
+    now, valid = utcnow(), False
+    actor = None
+    with transaction() as db:
+        token = request.cookies.get(COOKIE, "")
+        session = db.get(AdminSession, digest(token)) if token else None
+        if not session or session.expires_at <= now:
+            raise HTTPException(403, "Sign in with an administrator account to create another administrator")
+        if not hmac.compare_digest(request.headers.get("x-csrf-token", ""), session.csrf):
+            raise HTTPException(403, "Invalid CSRF token")
+        admin = db.get(Admin, session.admin_id)
+        if not admin:
+            raise HTTPException(401, "Admin authentication required")
+        key = digest(f"admin-create:{admin.id}")
+        db.execute(
+            insert(LoginThrottle).values(key=key, failures=0, window_start=now).on_conflict_do_nothing()
+        )
+        throttle = db.scalar(select(LoginThrottle).where(LoginThrottle.key == key).with_for_update())
+        if throttle.window_start < now - timedelta(minutes=5):
+            throttle.failures, throttle.window_start = 0, now
+        if throttle.failures >= 5:
+            raise HTTPException(429, "Too many password confirmations; retry in five minutes")
+        valid = password_matches(password, admin.password_hash)
+        if valid:
+            throttle.failures = 0
+            actor = admin.username
+        else:
+            throttle.failures += 1
+    if not valid:
+        raise HTTPException(403, "Your current administrator password is incorrect")
+    return actor

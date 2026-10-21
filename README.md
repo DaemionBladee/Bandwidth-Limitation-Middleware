@@ -43,6 +43,24 @@ After pulling an update, stop any running `make dev`, run `git pull --ff-only`, 
 
 ## Admin capabilities
 
+### Default quota plan and automatic subscribers
+
+In **Policy library → Default quota plan**, create a plan with its own quota, normal/limited speeds, timezone, and reset schedule. Alternatively choose **Use as default** on an existing policy. Edit or remove the default from its card. No default is enabled by a migration or by `make demo`; choose one explicitly.
+
+An enabled default is assigned automatically when an admin/API registers a new subscriber, or when the configured accounting adapter first receives an unknown username. For real WLC users, connect a trusted RADIUS accounting export first: the app discovers identities from those records, not from a WLC connection notification or raw syslog. `ACCOUNTING_SOURCE=radius-jsonl` consumes the documented JSONL format through `ACCOUNTING_FILE`; an exporter/parser is still required for actual Cisco logs. Exporting Start events allows enrollment as soon as accounting reports a connection, with absent Start counters treated as zero. No external subscriber database sync or subscriber password provisioning is installed.
+
+Each subscriber receives an independent allowance. First accounting discovery starts the assignment at the earliest sample timestamp in its batch, so that initial traffic is included; the currently configured default version is used for backlogged discoveries. Later records, duplicate events, new sessions, and reconnects reuse the identity and usage. Existing users without an assignment are also left unchanged. User creation, default assignment, accounting, checkpoint advancement, audit, and enforcement jobs commit together. Concurrent discoveries create only one subscriber and one initial assignment.
+
+**Edit default plan** creates a new version for future subscribers only. Existing assignments, allowances, overrides, and pending changes are retained. To update existing subscribers, use the policy library's ordinary **Edit policy** and explicitly choose immediate or next-period application, or change an individual assignment. Removing the default stops automatic enrollment and retains the policy and all history. Disabling the default's policy pauses enrollment. Without an enabled default, unknown accounting users still stop their batch until registered; already registered users continue to ingest.
+
+### Administrator accounts and change history
+
+Create the first administrator with `make bootstrap`; interactive setup securely prompts for a password and confirmation. Existing accounts are never overwritten. A bootstrap password supplied through `ADMIN_BOOTSTRAP_PASSWORD` is intended for controlled setup only; remove it from persistent configuration afterward.
+
+Signed-in administrators can create individual accounts in **Administrators → Create administrator**. New passwords must match and contain 12–512 characters. The acting administrator must confirm their own current password; five failed confirmations block account creation for five minutes. The endpoint requires a valid browser session, same-origin/CSRF checks, and password confirmation even when an automation token is present. Passwords use salted scrypt hashes and are omitted from API responses, validation errors, and audit entries. Dialog passwords clear when closed. Each administrator has full workspace access; there is no public account registration. Use HTTPS with `COOKIE_SECURE=true` outside local development.
+
+**Change history** shows activity counts, a seven-day activity chart, category/person/day filters, and readable parameter comparisons with units, names, and localized times. Expand an event to compare **Before → After**; no raw JSON is needed. The view covers the latest 100 retained events, rather than claiming all-time statistics. Live updates preserve filters and expanded events.
+
 - Create/edit versioned policies, positive byte quotas, normal/limited speeds, enabled status, timezone, and calendar/custom schedules. Limited speeds cannot exceed normal speeds.
 - Register accounting usernames and assign policies. Disable a policy or assignment to request its NORMAL profile. Identity matching is exact and case-sensitive.
 - Apply edits immediately or at each subscriber's next boundary. Expected revisions reject concurrent lost updates.
@@ -55,7 +73,7 @@ Authentication uses scrypt password hashes and database-backed random, hashed se
 
 `ACCOUNTING_SOURCE=mock` uses a PostgreSQL inbox. `jsonl` reads normalized measurements, and `radius-jsonl` reads exported RADIUS counters from `ACCOUNTING_FILE`. The adapter interface separates source polling from accounting. No accounting service was configured in the original checkout; these are concrete local integration options, not a live feed.
 
-Every record requires a stable, source-unique `record_id`. Identical replays are no-ops; ID reuse with different content is rejected. Source cursor and ledger updates commit atomically. A malformed record or unknown user blocks the batch without advancing the checkpoint; repair the exporter or register the username and retry. JSONL input must be append-only: partial final lines wait for completion, and rotation/truncation is rejected for operator reconciliation.
+Every record requires a stable, source-unique `record_id`. Identical replays are no-ops; ID reuse with different content is rejected. Source cursor and ledger updates commit atomically. A malformed record or unknown user without an enabled default blocks the batch without advancing the checkpoint; repair the exporter, configure a default, or register the username and retry. JSONL input must be append-only: partial final lines wait for completion, and rotation/truncation is rejected for operator reconciliation.
 
 Cumulative records are ordered by timestamp, then record ID within source/user/session. A delayed sample corrects the subsequent sample's delta and affected totals, including completed periods. A counter decrease starts a new counter segment. A new session ID starts an independent baseline. Exporters must use unique session IDs across NAS/reboots (prefer `Acct-Unique-Session-Id`) and report resets, including zero samples where possible: an unobserved reset whose new counter exceeds the previous counter cannot be inferred from counters alone.
 

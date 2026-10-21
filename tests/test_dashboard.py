@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -184,6 +185,117 @@ def test_dashboard_full_workflow(tmp_path):
                 page.get_by_label("Search subscribers").fill("")
                 assert not legacy_reads, legacy_reads
                 assert len(documents) == 1, documents
+                # Default-plan CRUD, automatic accounting discovery, and per-user allowances.
+                page.get_by_role("button", name="Policy library", exact=True).click()
+                page.get_by_role("button", name="Create default plan", exact=True).click()
+                expect(page.get_by_role("heading", name="Create default quota plan")).to_be_visible()
+                policy_form.get_by_label("Policy name", exact=True).fill("Welcome monthly")
+                policy_form.get_by_label("Quota (GB, decimal)").fill("5")
+                policy_form.get_by_role("button", name="Save policy").click()
+                expect(page.locator("#policy-dialog")).not_to_be_visible()
+                expect(page.locator("#default-plan-card")).to_contain_text("Welcome monthly")
+                session = page.request.get(base + "/api/session").json()
+                response = page.request.post(
+                    base + "/api/mock/accounting",
+                    headers={"X-CSRF-Token": session["csrf"]},
+                    data={
+                        "record_id": "first-wlc-event",
+                        "username": "auto@wlc.example",
+                        "session_id": "nas-a:session-1",
+                        "observed_at": datetime.now(UTC).isoformat(),
+                        "kind": "delta",
+                        "upload": 1000000000,
+                        "download": 1000000000,
+                        "unit": "bytes",
+                    },
+                )
+                assert response.status == 202
+                page.get_by_role("button", name="Subscribers", exact=True).click()
+                automatic = page.locator("#users-table tr").filter(has_text="auto@wlc.example")
+                expect(automatic).to_contain_text("Welcome monthly", timeout=15000)
+                expect(automatic).to_contain_text("5 GB")
+                expect(automatic).to_contain_text("2 GB")
+                page.get_by_role("button", name="Add subscriber", exact=True).click()
+                page.get_by_label("Accounting username").fill("manual.default@example.com")
+                page.get_by_role("button", name="Create subscriber", exact=True).click()
+                expect(page.locator("#user-dialog")).not_to_be_visible()
+                expect(page.locator("#assignment-dialog")).not_to_be_visible()
+                expect(
+                    page.locator("#users-table tr").filter(has_text="manual.default@example.com")
+                ).to_contain_text("Welcome monthly")
+                page.get_by_role("button", name="Policy library", exact=True).click()
+                page.get_by_role("button", name="Edit default plan", exact=True).click()
+                policy_form.get_by_label("Quota (GB, decimal)").fill("6")
+                policy_form.get_by_role("button", name="Save policy").click()
+                expect(page.locator("#policy-dialog")).not_to_be_visible()
+                expect(page.locator("#default-plan-card")).to_contain_text("6 GB")
+                page.evaluate("window.scrollTo(0,0)")
+                page.screenshot(path="artifacts/default-plan.png", full_page=True)
+                expect(automatic).to_contain_text("5 GB")
+                page.get_by_role("button", name="Remove default", exact=True).click()
+                page.locator("#default-choice-dialog").get_by_role("button", name="Cancel").click()
+                expect(page.locator("#default-plan-card")).to_contain_text("Welcome monthly")
+                page.get_by_role("button", name="Remove default", exact=True).click()
+                page.locator("#default-choice-dialog").get_by_role(
+                    "button", name="Remove default", exact=True
+                ).click()
+                expect(page.locator("#default-plan-card")).to_contain_text("NOT CONFIGURED")
+                page.locator(".policy-card").filter(has_text="Welcome monthly").get_by_role(
+                    "button", name="Use as default"
+                ).click()
+                page.get_by_role("button", name="Set default plan", exact=True).click()
+                expect(page.locator("#default-plan-card")).to_contain_text("AUTOMATIC ASSIGNMENT ON")
+                # Account creation uses the acting admin's password; successful forms clear secrets.
+                page.get_by_role("button", name="Administrators", exact=True).click()
+                page.get_by_role("button", name="Create administrator", exact=True).click()
+                admin_form = page.locator("#admin-form")
+                admin_form.get_by_label("New administrator username", exact=True).fill("second-admin")
+                admin_form.get_by_label("New administrator password", exact=True).fill(
+                    "second-admin-passphrase"
+                )
+                admin_form.get_by_label("Confirm new administrator password", exact=True).fill(
+                    "second-admin-passphrase"
+                )
+                admin_form.get_by_label("Your current administrator password", exact=True).fill(
+                    "browser-test-password"
+                )
+                admin_form.get_by_role("button", name="Create account", exact=True).click()
+                expect(page.locator("#admin-dialog")).not_to_be_visible()
+                expect(page.locator("#admin-list")).to_contain_text("second-admin")
+                expect(admin_form.get_by_label("New administrator password", exact=True)).to_have_value("")
+                page.evaluate("window.scrollTo(0,0)")
+                page.screenshot(path="artifacts/administrators.png", full_page=True)
+                # History presents readable comparisons, categories, actors, and an activity chart.
+                page.get_by_role("button", name="Change history", exact=True).click()
+                page.get_by_label("Filter changes by category").select_option("plans")
+                page.get_by_label("Search change history").fill("Welcome monthly")
+                change = page.locator(".audit-item").filter(has_text="Default plan updated").first
+                change.locator("summary").click()
+                quota_change = change.locator(".change-row").filter(has_text="Data allowance")
+                expect(quota_change.locator(".old-value")).to_have_text("5 GB")
+                expect(quota_change.locator(".new-value")).to_have_text("6 GB")
+                expect(page.locator("#audit-list pre")).to_have_count(0)
+                expect(page.locator("#audit-chart button")).to_have_count(7)
+                page.evaluate("window.scrollTo(0,0)")
+                page.screenshot(path="artifacts/change-history.png", full_page=True)
+                # Live changes do not collapse an expanded comparison or reset filters.
+                response = page.request.post(
+                    base + "/api/users",
+                    headers={"X-CSRF-Token": session["csrf"]},
+                    data={"username": "live-history-check@example.com"},
+                )
+                assert response.status == 201
+                expect(page.locator("#nav-user-count")).to_have_text("5")
+                expect(change.locator("details")).to_have_attribute("open", "")
+                expect(page.get_by_label("Filter changes by category")).to_have_value("plans")
+                page.get_by_role("button", name="Clear filters", exact=True).click()
+                page.get_by_label("Filter changes by category").select_option("security")
+                expect(page.locator("#audit-list")).to_contain_text("second-admin")
+                expect(page.locator("#audit-list")).not_to_contain_text("passphrase")
+                page.get_by_label("Filter changes by actor").select_option("browser-admin")
+                expect(page.locator("#audit-list .audit-item")).to_have_count(1)
+                page.get_by_role("button", name="Clear filters", exact=True).click()
+                page.get_by_label("Search change history").fill("Welcome monthly")
                 page.get_by_role("button", name="Switch to dark theme").click()
                 expect(page.locator("html")).to_have_attribute("data-theme", "dark")
                 page.evaluate("window.scrollTo(0,0)")
@@ -191,6 +303,13 @@ def test_dashboard_full_workflow(tmp_path):
                 page.get_by_role("button", name="Switch to light theme").click()
                 page.set_viewport_size({"width": 390, "height": 844})
                 page.evaluate("window.scrollTo(0,0)")
+                page.get_by_label("Filter changes by category").select_option("plans")
+                page.screenshot(path="artifacts/change-history-mobile.png", full_page=True)
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+                page.get_by_role("button", name="Policy library", exact=True).click()
+                page.screenshot(path="artifacts/default-plan-mobile.png", full_page=True)
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+                page.get_by_role("button", name="Overview", exact=True).click()
                 page.screenshot(path="artifacts/dashboard-mobile.png", full_page=True)
                 assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
                 assert not errors, errors

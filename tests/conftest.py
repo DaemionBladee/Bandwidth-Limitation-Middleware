@@ -20,6 +20,7 @@ from sqlalchemy.engine import make_url  # noqa: E402
 
 from bandwidth import accounting, api, auth, engine, queue, worker  # noqa: E402
 from bandwidth.db import Base, transaction  # noqa: E402
+from bandwidth.models import DefaultPlan  # noqa: E402
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -39,6 +40,7 @@ def reset(migrate):
     with transaction() as db:
         names = ",".join('"' + t.name + '"' for t in Base.metadata.sorted_tables)
         db.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
+        db.add(DefaultPlan(id=1, revision=0))
 
 
 @pytest.fixture
