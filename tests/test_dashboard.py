@@ -7,6 +7,7 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -97,7 +98,7 @@ def test_dashboard_full_workflow(tmp_path):
                 page.get_by_role("button", name="Display preferences").click()
                 page.get_by_label("Find display timezone").fill("Yangon")
                 page.get_by_label("Display timezone", exact=True).select_option("Asia/Yangon")
-                page.get_by_role("button", name="Apply timezone").click()
+                page.get_by_role("button", name="Apply preferences").click()
                 expect(page.locator("#display-zone-label")).to_have_text("Asia/Yangon")
                 page.get_by_role("button", name="New policy", exact=True).click()
                 policy_form = page.locator("#policy-form")
@@ -313,9 +314,154 @@ def test_dashboard_full_workflow(tmp_path):
                 page.screenshot(path="artifacts/dashboard-mobile.png", full_page=True)
                 assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
                 assert not errors, errors
+                # Each long list has independent, persistent custom page sizes.
+                page.set_viewport_size({"width": 1440, "height": 1080})
+                page.get_by_role("button", name="Display preferences").click()
+                preferences = page.locator("#preferences-form")
+                for key, size in {
+                    "subscribers": 2,
+                    "policies": 1,
+                    "audit": 3,
+                    "admins": 1,
+                    "history": 1,
+                }.items():
+                    preferences.locator(f'[data-page-preference="{key}"]').fill(str(size))
+                preferences.get_by_role("button", name="Apply preferences").click()
+                page.get_by_role("button", name="Subscribers", exact=True).click()
+                subscribers_pager = page.get_by_role("navigation", name="Subscribers pagination", exact=True)
+                expect(page.locator("#users-table tr")).to_have_count(2)
+                expect(subscribers_pager.locator(".page-summary")).to_have_text("1–2 of 5 subscribers")
+                expect(
+                    subscribers_pager.get_by_role("button", name="Previous subscribers page")
+                ).to_be_disabled()
+                subscribers_pager.get_by_role("button", name="Next subscribers page").click()
+                expect(subscribers_pager.get_by_label("Subscribers page", exact=True)).to_have_value("2")
+                # A committed live update preserves the current page and page size.
+                assert (
+                    page.request.post(
+                        base + "/api/users",
+                        headers={"X-CSRF-Token": session["csrf"]},
+                        data={"username": "zz-pagination-live@example.com"},
+                    ).status
+                    == 201
+                )
+                expect(page.locator("#nav-user-count")).to_have_text("6")
+                expect(subscribers_pager.get_by_label("Subscribers page", exact=True)).to_have_value("2")
+                expect(page.locator("#users-table tr")).to_have_count(2)
+                subscribers_pager.get_by_label("Subscribers page", exact=True).fill("3")
+                subscribers_pager.get_by_label("Subscribers page", exact=True).press("Enter")
+                expect(subscribers_pager.locator(".page-summary")).to_have_text("5–6 of 6 subscribers")
+                expect(subscribers_pager.get_by_role("button", name="Next subscribers page")).to_be_disabled()
+                page_size = subscribers_pager.get_by_label("Subscribers per page", exact=True)
+                page_size.fill("0")
+                page_size.press("Tab")
+                assert page_size.evaluate("el => !el.checkValidity()")
+                expect(page.locator("#users-table tr")).to_have_count(2)
+                page_size.fill("3")
+                page_size.press("Enter")
+                expect(page.locator("#users-table tr")).to_have_count(3)
+                expect(subscribers_pager.get_by_label("Subscribers page", exact=True)).to_have_value("1")
+                subscribers_pager.get_by_role("button", name="Next subscribers page").click()
+                page.get_by_label("Search subscribers").fill("auto@")
+                expect(subscribers_pager.get_by_label("Subscribers page", exact=True)).to_have_value("1")
+                expect(page.locator("#users-table tr")).to_have_count(1)
+                page.get_by_label("Search subscribers").fill("no-subscriber-matches")
+                expect(subscribers_pager.locator(".page-summary")).to_have_text("0 subscribers")
+                expect(subscribers_pager.get_by_label("Subscribers page", exact=True)).to_be_disabled()
+                page.get_by_label("Search subscribers").fill("")
+                page.get_by_role("button", name="Policy library", exact=True).click()
+                policies_pager = page.get_by_role("navigation", name="Policies pagination", exact=True)
+                expect(page.locator("#policy-grid .policy-card")).to_have_count(1)
+                policies_pager.get_by_label("Policies page", exact=True).fill("3")
+                policies_pager.get_by_label("Policies page", exact=True).press("Enter")
+                expect(policies_pager.locator(".page-summary")).to_have_text("3–3 of 3 policies")
+                page.get_by_label("Search policies").fill("Browser policy")
+                expect(policies_pager.get_by_label("Policies page", exact=True)).to_have_value("1")
+                expect(page.locator("#policy-grid .policy-card")).to_have_count(1)
+                page.get_by_label("Search policies").fill("")
+                page.get_by_role("button", name="Change history", exact=True).click()
+                page.get_by_role("button", name="Clear filters", exact=True).click()
+                audit_pager = page.get_by_role("navigation", name="Change history pagination", exact=True)
+                expect(page.locator("#audit-list .audit-item")).to_have_count(3)
+                audit_pager.get_by_role("button", name="Next change history page").click()
+                expect(audit_pager.get_by_label("Change history page", exact=True)).to_have_value("2")
+                page.get_by_label("Filter changes by category").select_option("security")
+                expect(audit_pager.get_by_label("Change history page", exact=True)).to_have_value("1")
+                expect(page.locator("#audit-list .audit-item")).to_have_count(1)
+                page.get_by_role("button", name="Clear filters", exact=True).click()
+                page.get_by_role("button", name="Administrators", exact=True).click()
+                admins_pager = page.get_by_role("navigation", name="Administrators pagination", exact=True)
+                expect(page.locator("#admin-list .admin-account")).to_have_count(1)
+                admins_pager.get_by_role("button", name="Next administrators page").click()
+                expect(page.locator("#admin-list")).to_contain_text("second-admin")
+                # Subscriber history sections have separate pages and one history size preference.
+                page.get_by_role("button", name="Subscribers", exact=True).click()
+                page.get_by_label("Search subscribers").fill("browser@")
+                row.get_by_role("button", name="History").click()
+                periods_pager = page.get_by_role("navigation", name="Quota periods pagination", exact=True)
+                expect(page.locator("#period-list .period-card")).to_have_count(1)
+                periods_pager.get_by_role("button", name="Next quota periods page").click()
+                expect(periods_pager.get_by_label("Quota periods page", exact=True)).to_have_value("2")
+                current_user = next(
+                    user
+                    for user in page.request.get(base + "/api/dashboard").json()["users"]
+                    if user["username"] == "browser@example.com"
+                )
+                response = page.request.post(
+                    base + f"/api/users/{current_user['id']}/reset-usage",
+                    headers={"X-CSRF-Token": session["csrf"]},
+                    data={
+                        "expected_period_id": current_user["period_id"],
+                        "request_id": str(uuid4()),
+                        "reason": "Pagination history allowance reset",
+                    },
+                )
+                assert response.status == 200
+                resets_pager = page.get_by_role("navigation", name="Usage resets pagination", exact=True)
+                expect(resets_pager.locator(".page-summary")).to_have_text("1–1 of 2 resets", timeout=15000)
+                expect(periods_pager.get_by_label("Quota periods page", exact=True)).to_have_value("2")
+                resets_pager.get_by_role("button", name="Next usage resets page").click()
+                expect(page.locator("#reset-list")).to_contain_text("Browser verified allowance reset")
+                page.get_by_role("button", name="Enforcement", exact=True).click()
+                attempts_pager = page.get_by_role(
+                    "navigation", name="Enforcement attempts pagination", exact=True
+                )
+                expect(page.locator("#attempt-list .attempt-card")).to_have_count(1)
+                attempts_pager.get_by_role("button", name="Next enforcement attempts page").click()
+                expect(attempts_pager.get_by_label("Enforcement attempts page", exact=True)).to_have_value(
+                    "2"
+                )
+                page.get_by_role("button", name="Usage & resets", exact=True).click()
+                expect(periods_pager.get_by_label("Quota periods page", exact=True)).to_have_value("2")
+                page.locator("#subscriber-dialog .close-dialog").click()
+                page.set_viewport_size({"width": 390, "height": 844})
+                page.get_by_label("Search subscribers").fill("")
+                subscribers_pager.scroll_into_view_if_needed()
+                expect(page.locator("#toast-stack .toast")).to_have_count(0, timeout=10000)
+                page.screenshot(path="artifacts/pagination-mobile.png", full_page=True)
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+                assert not errors, errors
                 page.reload()
                 expect(page.locator("#display-zone-label")).to_have_text("Asia/Yangon")
                 expect(page.locator("#live-status")).to_contain_text("Live updates", timeout=15000)
+                expect(
+                    page.get_by_role("navigation", name="Subscribers pagination", exact=True).get_by_label(
+                        "Subscribers per page", exact=True
+                    )
+                ).to_have_value("3")
+                page.get_by_role("button", name="Display preferences").click()
+                for key, size in {
+                    "subscribers": 3,
+                    "policies": 1,
+                    "audit": 3,
+                    "admins": 1,
+                    "history": 1,
+                }.items():
+                    expect(preferences.locator(f'[data-page-preference="{key}"]')).to_have_value(str(size))
+                preferences.locator('[data-page-preference="policies"]').fill("0")
+                preferences.get_by_role("button", name="Apply preferences").click()
+                expect(page.locator("#preferences-dialog")).to_be_visible()
+                preferences.get_by_role("button", name="Cancel", exact=True).click()
                 # Revocation must close an already authenticated event stream.
                 session = page.request.get(base + "/api/session").json()
                 response = page.request.post(base + "/api/logout", headers={"X-CSRF-Token": session["csrf"]})

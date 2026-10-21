@@ -9,13 +9,28 @@ const storage = {
   set(key, value) { try { localStorage.setItem(`bandwidth.${key}`, value); } catch { /* Private browser storage. */ } }
 };
 let csrf = '', snapshot = null, policies = [], users = [], timezones = ['UTC'];
-let activeTab = 'overview', activeFilter = 'all', pageNumber = 1, chartMode = 'both', selectedDay = null;
+let activeTab = 'overview', activeFilter = 'all', chartMode = 'both', selectedDay = null;
 let stream = null, streamVersion = 0, loggedIn = false, lastUpdated = null;
 let detailUserId = null, detailTab = 'usage', detailHistory = null, historyRequest = 0;
 let resetRequest = null, menuUserId = null, menuAnchor = null;
 let policyPurpose = 'policy', defaultChoice = null, auditDay = null;
 let displayZone = storage.get('timezone') || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-const pageSize = 25;
+const pageDefaults = {subscribers:25,policies:6,audit:10,admins:10,history:10};
+const pageSizes = Object.fromEntries(Object.entries(pageDefaults).map(([key,fallback]) => {
+  const saved = Number(storage.get(`page-size.${key}`));
+  return [key,Number.isInteger(saved) && saved >= 1 && saved <= 100 ? saved : fallback];
+}));
+const pageLists = {
+  subscribers:{label:'Subscribers',unit:'subscribers',sizeKey:'subscribers'},
+  policies:{label:'Policies',unit:'policies',sizeKey:'policies'},
+  audit:{label:'Change history',unit:'changes',sizeKey:'audit'},
+  admins:{label:'Administrators',unit:'administrators',sizeKey:'admins'},
+  periods:{label:'Quota periods',unit:'periods',sizeKey:'history'},
+  resets:{label:'Usage resets',unit:'resets',sizeKey:'history'},
+  attempts:{label:'Enforcement attempts',unit:'attempts',sizeKey:'history'}
+};
+const listPages = Object.fromEntries(Object.keys(pageLists).map(key=>[key,1]));
+const listTotals = {};
 const zoneSupport = new Map(), formatters = new Map(), offsets = new Map();
 let offsetMinute = 0;
 const formatter = (key, options) => { if (!formatters.has(key)) formatters.set(key, new Intl.DateTimeFormat(undefined, options)); return formatters.get(key); };
@@ -111,6 +126,36 @@ function patchList(parent, items, keyOf, html, signatureOf = item => JSON.string
     if (parent.children[index] !== node) parent.insertBefore(node, parent.children[index] || null);
   });
   [...parent.children].forEach(node => { if (!wanted.has(node.dataset.key)) node.remove(); });
+}
+function pageItems(key,items) {
+  const size = pageSizes[pageLists[key].sizeKey], pages = Math.max(1,Math.ceil(items.length/size));
+  listPages[key] = Math.max(1,Math.min(listPages[key],pages)); listTotals[key] = items.length;
+  return items.slice((listPages[key]-1)*size,listPages[key]*size);
+}
+function renderPager(key) {
+  const parent = $(`[data-pagination="${key}"]`); if (!parent) return;
+  const {label,unit,sizeKey} = pageLists[key], size = pageSizes[sizeKey], total = listTotals[key] || 0;
+  const pages = Math.max(1,Math.ceil(total/size)), page = listPages[key];
+  if (!parent.children.length) {
+    parent.setAttribute('role','navigation'); parent.setAttribute('aria-label',`${label} pagination`);
+    parent.innerHTML = `<span class="page-summary" role="status"></span><div class="page-controls"><label class="page-size-label">Per page<input type="number" min="1" max="100" step="1" inputmode="numeric" data-page-size="${key}" aria-label="${label} per page" title="Choose 1–100 items per page"></label><div class="page-navigation"><button class="pagination-button" data-page-step="-1" data-page-list="${key}" aria-label="Previous ${label.toLowerCase()} page">${icon('chevron-left')}</button><label>Page<input type="number" min="1" step="1" inputmode="numeric" data-page-jump="${key}" aria-label="${label} page"></label><span class="page-total"></span><button class="pagination-button" data-page-step="1" data-page-list="${key}" aria-label="Next ${label.toLowerCase()} page">${icon('chevron-right')}</button></div></div>`;
+  }
+  const summary = total ? `${(page-1)*size+1}–${Math.min(page*size,total)} of ${total} ${unit}` : `0 ${unit}`;
+  if ($('.page-summary',parent).textContent !== summary) $('.page-summary',parent).textContent = summary;
+  $('.page-total',parent).textContent = `of ${pages}`;
+  const sizeInput = $('[data-page-size]',parent), pageInput = $('[data-page-jump]',parent);
+  if (document.activeElement !== sizeInput) { sizeInput.value = size; sizeInput.setCustomValidity(''); }
+  pageInput.max = pages; pageInput.disabled = !total;
+  if (document.activeElement !== pageInput) { pageInput.value = page; pageInput.setCustomValidity(''); }
+  $('[data-page-step="-1"]',parent).disabled = page <= 1;
+  $('[data-page-step="1"]',parent).disabled = page >= pages;
+}
+function renderPagedList(key) {
+  ({subscribers:renderUsers,policies:renderPolicies,audit:renderAudit,admins:renderAdmins,periods:renderHistory,resets:renderHistory,attempts:renderHistory})[key]();
+}
+function savePageSize(sizeKey,size) {
+  pageSizes[sizeKey] = size; storage.set(`page-size.${sizeKey}`,size);
+  Object.entries(pageLists).forEach(([key,list])=>{ if (list.sizeKey === sizeKey) listPages[key] = 1; });
 }
 function setConnection(state) {
   const pill = $('#live-status'); pill.className = `live-pill ${state === 'live' ? '' : state === 'paused' || state === 'connecting' ? 'connecting' : 'offline'}`;
@@ -222,13 +267,11 @@ function renderUserRow(user) {
 function renderUsers() {
   const counts = {all: users.length, normal: users.filter(isNormal).length, limited: users.filter(isLimited).length, attention: users.filter(hasAttention).length, unassigned: users.filter(u => !u.policy).length};
   $$('[data-filter]').forEach(button => { $('span',button).textContent = counts[button.dataset.filter]; button.classList.toggle('active',button.dataset.filter === activeFilter); button.setAttribute('aria-pressed',button.dataset.filter === activeFilter); });
-  const list = filteredUsers(), pages = Math.max(1,Math.ceil(list.length / pageSize)); pageNumber = Math.min(pageNumber,pages);
-  const shown = list.slice((pageNumber-1)*pageSize,pageNumber*pageSize);
+  const list = filteredUsers(), shown = pageItems('subscribers',list);
   patchList($('#users-table'), shown, u => u.id, renderUserRow, u => JSON.stringify([u,displayZone]));
   shown.forEach(user => { const row = $(`#users-table tr[data-key="${user.id}"]`); $('.meter span',row).style.width = `${percent(user)}%`; });
   $('#users-empty').hidden = users.length !== 0; $('#search-empty').hidden = !users.length || list.length !== 0;
-  setText('#pagination-label', list.length ? `${(pageNumber-1)*pageSize+1}–${Math.min(pageNumber*pageSize,list.length)} of ${list.length} subscribers` : '0 subscribers');
-  setText('#page-number', `${pageNumber} / ${pages}`); $('#previous-page').disabled = pageNumber <= 1; $('#next-page').disabled = pageNumber >= pages;
+  renderPager('subscribers');
   updateCountdowns();
 }
 function renderTraffic() {
@@ -253,10 +296,11 @@ function renderTraffic() {
 function renderPolicies() {
   const query = $('#policy-search').value.trim().toLowerCase(), list = policies.filter(p => `${p.spec.name} ${p.spec.timezone}`.toLowerCase().includes(query));
   setText('#policy-count', `${policies.length} ${policies.length === 1 ? 'policy' : 'policies'}`);
-  patchList($('#policy-grid'), list, p => p.id, policy => {
+  patchList($('#policy-grid'), pageItems('policies',list), p => p.id, policy => {
     const spec = policy.spec, schedule = spec.period_type === 'monthly' ? `Day ${spec.monthly_day} · clamps to month end` : spec.period_type === 'weekly' ? ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][spec.weekly_day] : spec.period_type === 'custom' ? `${date(spec.custom_start,spec.timezone)} → ${date(spec.custom_end,spec.timezone)}` : 'Every day';
     return `<article class="policy-card"><div class="card-top">${badge(spec.enabled ? 'ENABLED' : 'DISABLED',spec.enabled ? '' : 'neutral')}<small>Version ${policy.revision} · #${policy.id}</small></div><h3>${esc(spec.name)}</h3><div class="quota">${gb(spec.quota_bytes)}<small>/ ${esc(spec.period_type)}</small></div><div class="profile-row"><span><b></b>Normal ↓ / ↑</span><strong>${num(spec.normal_download_kbps/1000)} / ${num(spec.normal_upload_kbps/1000)} Mbps</strong></div><div class="profile-row limited"><span><b></b>Limited ↓ / ↑</span><strong>${num(spec.limited_download_kbps/1000)} / ${num(spec.limited_upload_kbps/1000)} Mbps</strong></div><p class="schedule">${icon('globe')}<span>${esc(spec.timezone)} · ${esc(spec.reset_time.slice(0,5))}<br>${esc(schedule)}</span></p><div class="policy-card-actions"><button class="secondary" data-edit="${policy.id}">Edit policy ${icon('arrow-right')}</button>${snapshot.default_plan?.policy_id === policy.id ? badge('NEW SUBSCRIBER DEFAULT') : `<button class="text-button" data-use-default="${policy.id}">Use as default</button>`}</div></article>`;
-  });
+  },policy=>JSON.stringify([policy,snapshot.default_plan?.policy_id]));
+  renderPager('policies');
   if (!list.length) $('#policy-grid').innerHTML = `<div class="empty-state"><span class="empty-icon">${icon('layers')}</span><h3>${policies.length ? 'No matching policies' : 'Create your first policy'}</h3><p>${policies.length ? 'Try a different policy name or timezone.' : 'Define a quota, speed profiles, and a reset schedule.'}</p><button class="secondary" data-new-policy>New policy</button></div>`;
 }
 const actionNames = {'policy.create':'Policy created','policy.edit':'Policy updated','user.create':'Subscriber added','user.discover':'Subscriber discovered','assignment.change':'Assignment changed','assignment.default':'Default plan assigned','usage.reset':'Subscriber usage reset','enforcement.retry':'Enforcement reconciliation requested','mock.accounting':'Mock accounting submitted','admin.create':'Administrator created','assignment.create':'Assignment created','default_plan.create':'Default plan created','default_plan.edit':'Default plan updated','default_plan.delete':'Default plan removed'};
@@ -309,13 +353,14 @@ function renderAudit() {
   counts.forEach(d => { $(`#audit-chart [data-key="${d.day}"] i`).style.height = `${Math.max(d.count/max*100,d.count ? 8 : 2)}%`; });
   const rows = all.filter(a => (category === 'all' || auditCategory(a.action) === category) && (actorSelect.value === 'all' || a.actor === actorSelect.value) && (!auditDay || localDay(a.created_at) === auditDay) && `${a.actor} ${a.action} ${actionNames[a.action] || ''} ${a.entity_label || a.entity} ${a.after?.spec?.name || a.before?.spec?.name || ''} ${a.after?.reason || ''} ${auditChanges(a).map(c=>`${c.label} ${c.before} ${c.after}`).join(' ')}`.toLowerCase().includes(query));
   setText('#audit-results',`${rows.length} ${rows.length === 1 ? 'CHANGE' : 'CHANGES'}`);
-  patchList($('#audit-list'), rows, a => a.id, a => {
+  patchList($('#audit-list'), pageItems('audit',rows), a => a.id, a => {
     const changes = auditChanges(a), category = auditCategory(a.action), day = localDay(a.created_at);
     const affected = a.after?.affected_users;
     const context = a.action.startsWith('default_plan') ? 'Applies to future subscribers. Existing allowances stay in place.' : affected ? `${affected.length} assigned subscriber${affected.length===1?'':'s'} · ${auditValue('application',a.after.application)}` : a.after?.reason || '';
     const subject = a.after?.username || a.after?.spec?.name || a.before?.spec?.name || a.entity_label || a.entity;
     return `<article class="audit-item"><span class="audit-icon ${category}">${icon(categoryIcons[category])}</span><div class="audit-content"><div class="audit-card-heading"><div><strong>${esc(actionNames[a.action] || a.action.replaceAll('.',' '))}</strong><p class="audit-subject">${esc(subject)}</p></div>${badge(categoryNames[category],'neutral')}</div><div class="audit-meta"><span class="audit-actor-avatar">${esc(initials(a.actor))}</span><span>${esc(a.actor)}</span><i></i><time datetime="${esc(a.created_at)}">${date(a.created_at,displayZone,true)}</time></div>${context ? `<p class="audit-context">${esc(context)}</p>` : ''}${changes.length ? `<details class="change-details"><summary>${icon('chevron-down')}View ${changes.length} ${changes.length===1?'change':'changes'}</summary><div class="change-grid"><div class="change-grid-heading"><span>Parameter</span><span>Before</span><span>After</span></div>${changes.map(c=>`<div class="change-row"><strong>${esc(c.label)}</strong><span class="old-value">${esc(c.before)}</span><span class="new-value">${esc(c.after)}</span></div>`).join('')}</div></details>` : '<p class="audit-context">Action recorded successfully.</p>'}<span class="audit-day-marker">${day}</span></div></article>`;
   }, a => JSON.stringify([a,displayZone,policies.map(p=>[p.id,p.spec.name])]));
+  renderPager('audit');
   if (!rows.length) $('#audit-list').innerHTML = '<div class="empty-state"><span class="empty-icon">'+icon('history')+'</span><h3>No matching changes</h3><p>Try another category, person, day, or search term.</p></div>';
 }
 function renderDefaultPlan() {
@@ -333,7 +378,8 @@ function chooseDefault(policyId = null) {
   openDialog('#default-choice-dialog');
 }
 function renderAdmins() {
-  patchList($('#admin-list'),snapshot.admins || [],a=>a.id,a=>`<article class="admin-account"><span class="avatar">${esc(initials(a.username))}</span><div><strong>${esc(a.username)}</strong><small>Full workspace administrator</small></div>${badge(a.username === $('#admin-name').textContent ? 'YOU' : 'ADMINISTRATOR','neutral')}</article>`);
+  patchList($('#admin-list'),pageItems('admins',snapshot.admins || []),a=>a.id,a=>`<article class="admin-account"><span class="avatar">${esc(initials(a.username))}</span><div><strong>${esc(a.username)}</strong><small>Full workspace administrator</small></div>${badge(a.username === $('#admin-name').textContent ? 'YOU' : 'ADMINISTRATOR','neutral')}</article>`);
+  renderPager('admins');
 }
 function renderWorkers() {
   const labels = {ingest:['Accounting ingestion','database'],evaluate:['Quota decisions','gauge'],rollover:['Period rollover','reset'],reconcile:['Enforcement checks','shield']};
@@ -430,7 +476,9 @@ function openReset(id) {
   openDialog('#reset-dialog');
 }
 async function showHistory(id) {
-  detailUserId = Number(id); detailTab = 'usage'; detailHistory = null; renderDetail();
+  detailUserId = Number(id); detailTab = 'usage'; detailHistory = null;
+  for (const key of ['periods','resets','attempts']) listPages[key] = 1;
+  $('#history-content').dataset.view = ''; renderDetail();
   $('#history-content').innerHTML = '<p class="history-note">Loading subscriber history…</p>';
   openDialog('#subscriber-dialog'); await loadHistory(detailUserId);
 }
@@ -452,12 +500,23 @@ async function loadHistory(id) {
 }
 function renderHistory() {
   if (!detailHistory) return;
-  const data = detailHistory;
+  const data = detailHistory, content = $('#history-content');
   $$('[data-detail-tab]').forEach(button => { button.classList.toggle('active',button.dataset.detailTab === detailTab); button.setAttribute('aria-pressed',button.dataset.detailTab === detailTab); });
+  if (content.dataset.view !== detailTab || !$(detailTab === 'enforcement' ? '#attempt-list' : '#period-list',content)) {
+    content.dataset.view = detailTab;
+    content.innerHTML = detailTab === 'enforcement' ? '<h3>Enforcement attempts</h3><p class="history-note">Requested and confirmed modes remain separate. Mock responses are simulations.</p><div id="attempt-list"></div><div class="list-pagination" data-pagination="attempts"></div>' : '<h3>Usage resets</h3><div id="reset-list"></div><div class="list-pagination" data-pagination="resets"></div><h3>Retained quota periods</h3><p class="history-note">Earlier allowances are preserved. Policy edits can retain overlapping views; these rows are not additive.</p><div id="period-list"></div><div class="list-pagination" data-pagination="periods"></div>';
+  }
   if (detailTab === 'enforcement') {
-    $('#history-content').innerHTML = `<h3>Enforcement attempts</h3><p class="history-note">Requested and confirmed modes remain separate. Mock responses are simulations.</p>${data.attempts.length ? data.attempts.map(attempt => `<article class="attempt-card"><div>${badge(attempt.outcome,attempt.outcome==='failed'?'danger':'neutral')}<time>${date(attempt.created_at)}</time></div><p>${esc(attempt.adapter.toUpperCase())} · ${esc(attempt.mode)} · generation ${attempt.generation}</p>${attempt.error ? `<p class="error">${esc(attempt.error)}</p>` : ''}</article>`).join('') : '<p class="history-note">No enforcement attempts yet.</p>'}`;
+    patchList($('#attempt-list'),pageItems('attempts',data.attempts.map((a,index)=>({...a,entry_key:index}))),a=>a.entry_key,attempt=>`<article class="attempt-card"><div>${badge(attempt.outcome,attempt.outcome==='failed'?'danger':'neutral')}<time>${date(attempt.created_at)}</time></div><p>${esc(attempt.adapter.toUpperCase())} · ${esc(attempt.mode)} · generation ${attempt.generation}</p>${attempt.error ? `<p class="error">${esc(attempt.error)}</p>` : ''}</article>`,a=>JSON.stringify([a,displayZone]));
+    if (!data.attempts.length) $('#attempt-list').innerHTML = '<p class="history-note">No enforcement attempts yet.</p>';
+    renderPager('attempts');
   } else {
-    $('#history-content').innerHTML = `<h3>Usage resets</h3>${data.resets.length ? data.resets.map(reset => `<article class="reset-card"><strong>Fresh allowance started</strong><time>${date(reset.effective_at)}</time><p>${esc(reset.actor)} · ${esc(reset.reason)}</p></article>`).join('') : '<p class="history-note">No manual resets. Scheduled allowances renew automatically.</p>'}<h3>Retained quota periods</h3><p class="history-note">Earlier allowances are preserved. Policy edits can retain overlapping views; these rows are not additive.</p>${data.periods.length ? data.periods.map(period => `<article class="period-card"><div><strong>${bytes(period.used_bytes)} <small>/ ${bytes(period.quota_bytes)}</small></strong>${badge(`Policy version ${period.version_id}`,'neutral')}</div><p><time>${date(period.starts_at)}</time> → <time>${date(period.ends_at)}</time><br>↑ ${bytes(period.upload_bytes)} · ↓ ${bytes(period.download_bytes)}</p></article>`).join('') : '<p class="history-note">No quota periods yet.</p>'}`;
+    patchList($('#reset-list'),pageItems('resets',data.resets),r=>r.id,reset=>`<article class="reset-card"><strong>Fresh allowance started</strong><time>${date(reset.effective_at)}</time><p>${esc(reset.actor)} · ${esc(reset.reason)}</p></article>`,r=>JSON.stringify([r,displayZone]));
+    if (!data.resets.length) $('#reset-list').innerHTML = '<p class="history-note">No manual resets. Scheduled allowances renew automatically.</p>';
+    renderPager('resets');
+    patchList($('#period-list'),pageItems('periods',data.periods),p=>p.id,period=>`<article class="period-card"><div><strong>${bytes(period.used_bytes)} <small>/ ${bytes(period.quota_bytes)}</small></strong>${badge(`Policy version ${period.version_id}`,'neutral')}</div><p><time>${date(period.starts_at)}</time> → <time>${date(period.ends_at)}</time><br>↑ ${bytes(period.upload_bytes)} · ↓ ${bytes(period.download_bytes)}</p></article>`,p=>JSON.stringify([p,displayZone]));
+    if (!data.periods.length) $('#period-list').innerHTML = '<p class="history-note">No quota periods yet.</p>';
+    renderPager('periods');
   }
 }
 function setTheme(theme) {
@@ -502,11 +561,13 @@ formHandler('#reset-form',async form => {
 });
 formHandler('#preferences-form',async () => {
   const zoneChanged = displayZone !== $('#display-timezone').value;
+  $$('[data-page-preference]').forEach(input=>{ const key=input.dataset.pagePreference, size=Number(input.value); if (size !== pageSizes[key]) savePageSize(key,size); });
+  renderUsers(); renderPolicies(); renderAudit(); renderAdmins(); if (detailHistory) renderHistory();
   setTheme($('#appearance-select').value);
   displayZone = $('#display-timezone').value; storage.set('timezone',displayZone); selectedDay = null;
   $('#preferences-dialog').close();
   if (zoneChanged) { disconnectStream(); try { await syncSnapshot(); } finally { connectStream(); } }
-  toast(`Display timezone set to ${displayZone}`);
+  toast('Display preferences saved');
 });
 formHandler('#default-choice-form',async () => {
   const choice = defaultChoice;
@@ -524,14 +585,13 @@ $('#policy-zone-search').addEventListener('input',event => populateZoneSelect($(
 $('#display-zone-search').addEventListener('input',event => populateZoneSelect($('#display-timezone'),event.target.value));
 $('#policy-timezone').addEventListener('change',updateClock); $('#display-timezone').addEventListener('change',updateClock);
 $('#assignment-form').policy_id.addEventListener('change',assignmentPreview);
-$('#subscriber-search').addEventListener('input',() => { pageNumber = 1; renderUsers(); });
-$('#subscriber-sort').addEventListener('change',() => { pageNumber = 1; renderUsers(); });
-$('#policy-search').addEventListener('input',renderPolicies); $('#audit-search').addEventListener('input',renderAudit);
-$('#audit-category').addEventListener('change',renderAudit); $('#audit-actor').addEventListener('change',renderAudit);
-$('#clear-audit-filters').addEventListener('click',()=>{ $('#audit-search').value=''; $('#audit-category').value='all'; $('#audit-actor').value='all'; auditDay=null; renderAudit(); });
-$('#previous-page').addEventListener('click',() => { pageNumber--; renderUsers(); }); $('#next-page').addEventListener('click',() => { pageNumber++; renderUsers(); });
-$('#clear-filters').addEventListener('click',() => { $('#subscriber-search').value = ''; activeFilter = 'all'; pageNumber = 1; renderUsers(); });
-$('#preferences').addEventListener('click',() => { $('#display-zone-search').value = ''; $('#appearance-select').value = document.documentElement.dataset.theme; populateZoneSelect($('#display-timezone'),'',displayZone); openDialog('#preferences-dialog'); updateClock(); });
+$('#subscriber-search').addEventListener('input',() => { listPages.subscribers = 1; renderUsers(); });
+$('#subscriber-sort').addEventListener('change',() => { listPages.subscribers = 1; renderUsers(); });
+$('#policy-search').addEventListener('input',()=>{ listPages.policies = 1; renderPolicies(); }); $('#audit-search').addEventListener('input',()=>{ listPages.audit = 1; renderAudit(); });
+$('#audit-category').addEventListener('change',()=>{ listPages.audit = 1; renderAudit(); }); $('#audit-actor').addEventListener('change',()=>{ listPages.audit = 1; renderAudit(); });
+$('#clear-audit-filters').addEventListener('click',()=>{ $('#audit-search').value=''; $('#audit-category').value='all'; $('#audit-actor').value='all'; auditDay=null; listPages.audit=1; renderAudit(); });
+$('#clear-filters').addEventListener('click',() => { $('#subscriber-search').value = ''; activeFilter = 'all'; listPages.subscribers = 1; renderUsers(); });
+$('#preferences').addEventListener('click',() => { $$('[data-page-preference]').forEach(input=>input.value=pageSizes[input.dataset.pagePreference]); $('#display-zone-search').value = ''; $('#appearance-select').value = document.documentElement.dataset.theme; populateZoneSelect($('#display-timezone'),'',displayZone); openDialog('#preferences-dialog'); updateClock(); });
 $('#theme-toggle').addEventListener('click',() => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 $('#new-policy').addEventListener('click',() => editPolicy(null)); $('#new-user').addEventListener('click',newUser); $('#empty-add-user').addEventListener('click',newUser);
 $('#reconnect').addEventListener('click',connectStream);
@@ -548,7 +608,8 @@ document.addEventListener('click',event => {
   const button = event.target.closest('button'); if (!button) return;
   if (button.classList.contains('close-dialog')) button.closest('dialog').close();
   if (button.dataset.tab) setTab(button.dataset.tab);
-  if (button.dataset.filter) { activeFilter = button.dataset.filter; pageNumber = 1; renderUsers(); }
+  if (button.dataset.pageStep) { const key=button.dataset.pageList; listPages[key]+=Number(button.dataset.pageStep); renderPagedList(key); }
+  if (button.dataset.filter) { activeFilter = button.dataset.filter; listPages.subscribers = 1; renderUsers(); }
   if (button.dataset.chart) { chartMode = button.dataset.chart; renderTraffic(); }
   if (button.dataset.day) { selectedDay = selectedDay === button.dataset.day ? null : button.dataset.day; renderTraffic(); }
   if (button.dataset.edit) editPolicy(Number(button.dataset.edit));
@@ -557,11 +618,23 @@ document.addEventListener('click',event => {
   if (button.hasAttribute('data-edit-default')) editPolicy(snapshot.default_plan.policy_id,'default');
   if (button.hasAttribute('data-remove-default')) chooseDefault();
   if (button.dataset.useDefault) chooseDefault(Number(button.dataset.useDefault));
-  if (button.dataset.auditDay) { auditDay = auditDay === button.dataset.auditDay ? null : button.dataset.auditDay; renderAudit(); }
+  if (button.dataset.auditDay) { auditDay = auditDay === button.dataset.auditDay ? null : button.dataset.auditDay; listPages.audit = 1; renderAudit(); }
   if (button.dataset.detail) showHistory(Number(button.dataset.detail));
   if (button.dataset.menu) showMenu(Number(button.dataset.menu),button);
   if (button.dataset.detailTab) { detailTab = button.dataset.detailTab; renderHistory(); }
   if (button.dataset.action) { closeMenu(); (menuAnchor?.isConnected ? menuAnchor : $(`[data-menu="${menuUserId}"]`))?.focus({preventScroll:true}); ({assign:assignUser,history:showHistory,reconcile,reset:openReset})[button.dataset.action]?.(menuUserId); }
+});
+document.addEventListener('input',event=>{ if (event.target.matches('[data-page-size],[data-page-jump]')) event.target.setCustomValidity(''); });
+document.addEventListener('change',event=>{
+  const input=event.target, key=input.dataset.pageSize || input.dataset.pageJump; if (!key) return;
+  const value=Number(input.value), max=input.dataset.pageSize ? 100 : Number(input.max);
+  if (!Number.isInteger(value) || value < 1 || value > max) { input.setCustomValidity(`Enter a whole number from 1 to ${max}.`); input.reportValidity(); return; }
+  input.setCustomValidity('');
+  if (input.dataset.pageSize) savePageSize(pageLists[key].sizeKey,value); else listPages[key]=value;
+  renderPagedList(key);
+});
+document.addEventListener('keydown',event=>{
+  if (event.key === 'Enter' && event.target.matches('[data-page-size],[data-page-jump]')) { event.preventDefault(); event.target.blur(); }
 });
 $('#subscriber-actions').addEventListener('keydown',event => {
   const items = $$('[role=menuitem]:not(:disabled)',$('#subscriber-actions'));

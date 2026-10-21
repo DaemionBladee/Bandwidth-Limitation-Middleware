@@ -64,7 +64,7 @@ Recorded transfer measures accounting data, rather than a live speed test, radio
 
 Each row shows the username, assigned policy/version, usage and remaining allowance, requested speeds, enforcement status, and next reset.
 
-You can search by username or policy, filter by normal/limited/attention/unassigned, and sort by name, highest usage, or next reset. Lists are paginated in groups of 25.
+You can search by username or policy, filter by normal/limited/attention/unassigned, and sort by name, highest usage, or next reset. Subscribers initially display 25 per page. Set a custom **Per page** value from 1–100, use the previous/next buttons, or enter a page number to jump directly.
 
 Open **History** or click a subscriber name for a detail drawer. **Usage & resets** shows retained periods and manual resets. **Enforcement** shows attempts, their adapter, outcome, and any error. The row action menu also provides policy assignment, reconciliation, and usage reset.
 
@@ -218,6 +218,8 @@ Default-plan events explain that existing allowances are preserved. Ordinary pol
 
 The API retains structured audit data for integrations, while the website renders readable comparisons. Unchanged expanded events and active filters survive incoming live updates.
 
+The timeline is paginated within the latest 100 available events. Its activity counts and chart still describe the available history, independently of the displayed page.
+
 ## Live updates and display preferences
 
 Usage, subscriber, policy, default-plan, administrator, and audit changes appear through an authenticated server event stream. Normal operation does not require a page refresh. Search text, unfinished forms, filters, and unchanged expanded entries remain in place.
@@ -225,6 +227,10 @@ Usage, subscriber, policy, default-plan, administrator, and audit changes appear
 The connection indicator reports **Live updates**, **Connecting**, **Reconnecting**, or background pause. It describes the website's connection to the middleware, not connectivity to ISE or the WLC. The last received data stays visible during an interruption. Updates pause in a hidden tab and resume when it becomes visible. Expired/revoked sessions return to sign-in.
 
 Use the globe button for **Display preferences**. Search timezone names/cities or UTC offsets, choose a display timezone and appearance, then apply. Preferences persist in the same browser. Desktop has a theme toggle; mobile can change appearance through preferences.
+
+Under **Content per page**, configure subscribers, policies, changes, administrators, and subscriber history separately. Any whole number from 1–100 is supported. Defaults are 25 subscribers, 6 policies, 10 changes, 10 administrators, and 10 entries per subscriber-history section. Each list also has its own **Per page** control. Quota periods, usage resets, and enforcement attempts share the history size preference but keep independent page positions. Saved sizes persist in this browser after reload.
+
+Changing search, filters, sort order, or page size returns the affected list to page 1. Live updates retain the current page when it remains available; a shorter result set moves to its last valid page. Summary cards, charts, and the default-plan card continue to describe their full data rather than only the currently displayed entries.
 
 **Display timezone** changes displayed timestamps and the traffic chart's local day boundaries. **Policy timezone** changes when a subscriber's quota renews. Changing display preferences does not move policy reset times.
 

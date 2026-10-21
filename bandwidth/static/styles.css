@@ -211,6 +211,22 @@ td small { font-size: 9px; }
 .table-footer > div { display: flex; align-items: center; gap: 12px; }
 .pagination-button { display: grid; place-items: center; width: 25px; height: 25px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--muted); }
 .pagination-button svg { width: 13px; }
+.list-pagination { border-top: 1px solid var(--line); padding: 14px 22px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
+.list-pagination .page-summary { line-height: 1.7; }
+.page-controls, .page-navigation { display: flex; align-items: center; gap: 12px; }
+.page-controls label { display: flex; flex-direction: row; align-items: center; gap: 7px; font-size: 11px; color: var(--muted); margin: 0; white-space: nowrap; }
+.page-controls input { width: 64px; min-width: 0; padding: 7px 5px 7px 8px; font-size: 11px; margin: 0; }
+.page-controls input:invalid { border-color: var(--danger); }
+.page-navigation { gap: 8px; }
+.page-navigation .pagination-button { width: 30px; height: 30px; }
+.page-total { white-space: nowrap; }
+.policy-pagination { border: 1px solid var(--line); border-radius: 9px; background: var(--surface); margin-top: 22px; }
+.page-preferences { margin: 25px 0 0; padding: 18px 0 0; border: 0; border-top: 1px solid var(--line); }
+.page-preferences legend { padding: 0 10px 0 0; font-size: 13px; font-weight: 650; }
+.page-preferences > p { margin: 0 0 17px; }
+.subscriber-drawer .list-pagination { padding: 13px 0; margin-bottom: 24px; }
+.subscriber-drawer .page-controls { flex-wrap: wrap; gap: 10px; }
+@media(max-width:760px) { .list-pagination { padding: 13px 17px; gap: 9px; }.page-controls { width: 100%; justify-content: space-between; gap: 8px; }.page-controls input { width: 55px; }.page-controls label { font-size: 10px; gap: 5px; }.page-navigation { gap: 6px; }.page-navigation .pagination-button { width: 27px; height: 29px; }.page-total { font-size: 10px; } }
 .empty-state { text-align: center; padding: 38px 20px; }
 .empty-icon { display: inline-grid; place-items: center; width: 44px; height: 44px; border: 1px solid var(--line); background: var(--surface-soft); color: var(--muted); border-radius: 12px; margin-bottom: 15px; }
 .empty-icon svg { width: 20px; height: 20px; }
