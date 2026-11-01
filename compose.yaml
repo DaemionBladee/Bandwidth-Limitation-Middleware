@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bandwidth
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bandwidth}
+      POSTGRES_DB: bandwidth
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: ["bandwidth-postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bandwidth -d bandwidth"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+volumes:
+  bandwidth-postgres:
