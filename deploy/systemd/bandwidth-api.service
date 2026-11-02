@@ -1,0 +1,27 @@
+[Unit]
+Description=Bandwidth Engine API and dashboard
+Requires=bandwidth-database.service
+After=network-online.target bandwidth-database.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bandwidth
+Group=bandwidth
+WorkingDirectory=/opt/bandwidth-engine
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/bandwidth-engine/.venv/bin/uvicorn bandwidth.api:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips 127.0.0.1 --timeout-graceful-shutdown 20
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/bandwidth-engine
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

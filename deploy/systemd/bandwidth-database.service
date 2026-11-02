@@ -1,0 +1,17 @@
+[Unit]
+Description=Bandwidth Engine PostgreSQL container
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/bandwidth-engine
+ExecStart=/usr/bin/docker compose -f compose.yaml -f deploy/compose.ubuntu.yaml up -d --wait db
+ExecStop=/usr/bin/docker compose -f compose.yaml -f deploy/compose.ubuntu.yaml stop db
+TimeoutStartSec=300
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

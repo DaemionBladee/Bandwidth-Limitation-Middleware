@@ -1,0 +1,4 @@
+# Use together with compose.yaml on the Ubuntu host.
+services:
+  db:
+    restart: unless-stopped

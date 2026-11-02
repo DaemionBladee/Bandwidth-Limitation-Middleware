@@ -4,6 +4,8 @@ Quota middleware with a FastAPI admin API, responsive dashboard, PostgreSQL acco
 
 Read the **[website feature and administrator guide](docs/website-guide.md)** for a page-by-page tour, default-plan onboarding, subscriber tasks, administrator creation, configuration locations, a demo walkthrough, and current integration boundaries. Technical references: [API](docs/api.md) · [Cisco ISE integration](docs/ise.md).
 
+Use the **[CachyOS development guide](docs/cachyos.md)** for your workstation and the **[Ubuntu Server deployment guide](docs/ubuntu-server.md)** for the deployed middleware. They include dependencies, database migration, systemd services, and HTTPS proxy configuration. The application has no Fedora-specific runtime components; neither target OS has been tested directly in this workspace.
+
 ## Run locally
 
 Run from the existing checkout (each cloud task is already isolated; no worktree is necessary):

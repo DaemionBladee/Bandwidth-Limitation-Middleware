@@ -314,6 +314,8 @@ Connection credentials and deployment-specific API mappings are configured outsi
 
 Prerequisites: Python 3.12+, uv, and Docker with Compose v2 for the supplied PostgreSQL workflow. See the [README](../README.md#run-locally) for installation/startup details.
 
+Use the [CachyOS guide](cachyos.md) for local development and the [Ubuntu Server guide](ubuntu-server.md) for deployment. Restore the database and local configuration to retain existing login accounts, subscribers, policies, usage, and history when moving an installation.
+
 For a first setup, copy `.env.example` to `.env` only if `.env` does not already exist. From the repository:
 
 ```sh
