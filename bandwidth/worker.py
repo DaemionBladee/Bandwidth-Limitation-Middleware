@@ -10,7 +10,7 @@ from bandwidth.accounting import ingest_batch
 from bandwidth.config import settings
 from bandwidth.db import transaction, utcnow
 from bandwidth.engine import evaluate, lock_user
-from bandwidth.ise import ise_adapter
+from bandwidth.ise import ISEError, ise_adapter
 from bandwidth.models import EnforcementAttempt, EnforcementState, Job, User
 from bandwidth.queue import claim, enqueue
 
@@ -56,8 +56,6 @@ def enforce(db, job, adapter=None):
         job.status, job.last_error = "done", None
     except Exception as exc:
         # Adapter exceptions are deliberately sanitized: no upstream bodies/secrets.
-        from bandwidth.ise import ISEError
-
         error = (
             str(exc) if isinstance(exc, (ISEError, ValueError)) else f"Adapter error ({type(exc).__name__})"
         )

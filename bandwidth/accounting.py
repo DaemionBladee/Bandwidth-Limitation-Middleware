@@ -143,7 +143,7 @@ def ingest_record(db, source, measurement: Measurement, now=None):
         if existing.fingerprint != fingerprint:
             raise ValueError("Accounting record ID reused with different content")
         return False
-    previous = successor = None
+    successor = None
     if measurement.kind == "cumulative":
         base = select(AccountingRecord).where(
             AccountingRecord.user_id == user.id,

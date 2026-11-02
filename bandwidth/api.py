@@ -21,7 +21,7 @@ from bandwidth.auth import (
 from bandwidth.config import settings
 from bandwidth.dashboard import TIMEZONES, dashboard_snapshot, event_response
 from bandwidth.db import transaction, utcnow
-from bandwidth.defaults import default_view, lock_default, provisioning_version, register
+from bandwidth.defaults import default_view, latest, lock_default, provisioning_version, register
 from bandwidth.engine import (
     UsageResetConflict,
     assign,
@@ -228,12 +228,7 @@ def audit(db, actor, action, entity, before=None, after=None):
 
 
 def latest_version(db, policy_id):
-    row = db.scalar(
-        select(PolicyVersion)
-        .where(PolicyVersion.policy_id == policy_id)
-        .order_by(PolicyVersion.revision.desc())
-        .limit(1)
-    )
+    row = latest(db, policy_id)
     if not row:
         raise HTTPException(404, "Policy not found")
     return row

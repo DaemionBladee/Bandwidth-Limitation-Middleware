@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from bandwidth.auth import password_hash
 from bandwidth.db import transaction
+from bandwidth.defaults import latest
 from bandwidth.engine import assign
 from bandwidth.models import Admin, Audit, Policy, PolicyVersion, User
 from bandwidth.schemas import PolicySpec
@@ -62,12 +63,7 @@ def demo():
                 Audit(actor="demo", action="policy.create", entity=f"policy:{policy.id}", after=version.spec)
             )
         else:
-            version = db.scalar(
-                select(PolicyVersion)
-                .where(PolicyVersion.policy_id == policy.id)
-                .order_by(PolicyVersion.revision.desc())
-                .limit(1)
-            )
+            version = latest(db, policy.id)
         user = db.scalar(select(User).where(User.username == "demo@example.com"))
         if not user:
             user = User(username="demo@example.com")
