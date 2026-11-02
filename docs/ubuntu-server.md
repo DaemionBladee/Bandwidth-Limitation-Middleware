@@ -174,6 +174,8 @@ sudo docker compose -f compose.yaml -f deploy/compose.ubuntu.yaml logs --tail 10
 3. Inspect the real ISE version/patch, API capabilities, active-session readback, WLC speed enforcement, and existing authorization profiles. Complete the reviewed [ISE deployment contract](ise.md) before setting `ISE_MODE=live`.
 4. Restart both application services after configuration changes. Verify new subscriber discovery, quota decisions, desired versus confirmed state, and actual client-session/profile readback using an authorized test identity.
 
+For the selected rsyslog/ANC deployment, use the [raw-capture receiver and ANC setup notes](ise.md#planned-rsyslog-input-and-anc-enforcement) to collect logs before the accounting parser is available. The operator-supplied enforcement route is `PUT /ers/config/ancendpoint/apply`; its actual body, endpoint identity mapping, policy mappings, and active-session readback still require verification.
+
 Unknown usernames in trusted accounting are registered and receive the enabled default automatically. The middleware does not provision subscriber passwords, read your separate subscriber-credential database, or receive raw syslog by itself. A successful mock response or HTTP acknowledgement is not live enforcement. The actual ISE/WLC details are still required to complete that integration.
 
 ## Update the server

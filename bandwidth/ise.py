@@ -162,6 +162,7 @@ class LiveISE:
             with httpx.Client(
                 base_url=self.config.ise_base_url,
                 auth=(self.config.ise_username, self.config.ise_password),
+                headers={"Accept": "application/json"},
                 verify=self.tls,
                 timeout=self.config.ise_timeout_seconds,
                 follow_redirects=False,

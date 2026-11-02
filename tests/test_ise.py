@@ -56,6 +56,10 @@ def test_live_version_update_reauth_and_session_confirmation(tmp_path):
     calls = []
 
     def handler(request):
+        assert request.headers["Accept"] == "application/json"
+        assert request.headers["Authorization"].startswith("Basic ")
+        if request.method in ("PUT", "POST"):
+            assert request.headers["Content-Type"] == "application/json"
         calls.append((request.method, request.url.path))
         if request.url.path == "/version":
             return httpx.Response(200, json={"version": "test-3.3"})
