@@ -2,6 +2,8 @@
 
 Use CachyOS as your development workstation and [Ubuntu Server](ubuntu-server.md) for the deployed middleware. Each installation has its own database, credentials, and accounting configuration. Keep development on mock adapters so that local testing does not issue requests to the live ISE deployment.
 
+To install and test a receiver on CachyOS, follow the [rsyslog setup and integration guide](rsyslog-setup.md). It includes the configuration-directory include and root-ownership settings used by the successful local capture test.
+
 Bandwidth Engine uses Python 3.12+, PostgreSQL 16+, and Docker Compose v2. CachyOS is based on Arch Linux, and the application has no Fedora-specific runtime components. The dashboard is served by Python and requires no frontend build. These instructions use the supplied local Compose database; CachyOS itself has not been tested.
 
 Choose the **fresh installation** steps for an empty workspace. For an existing installation, **back up on Fedora before replacing the OS**, then follow **restore on CachyOS**. Git contains the code; it does not contain your PostgreSQL data, passwords, or local configuration. A PostgreSQL Docker volume on a disk being erased will also be lost.
@@ -116,6 +118,8 @@ Check each command's result before continuing. Restore **before** running `make 
 Review `.env` after copying, especially the database hostname and credentials. For this development workstation, set `ISE_MODE=mock`, `ACCOUNTING_SOURCE=mock`, and an empty `ACCOUNTING_FILE` before starting processes. Use the [Ubuntu guide](ubuntu-server.md) to resume a deployed live integration. A Compose database password is initialized only when its volume is first created; changing `POSTGRES_PASSWORD` later does not change an existing database password. Keep it consistent with `DATABASE_URL`.
 
 Restore the accounting file in full, the ISE contract, and any CA bundle. Update their absolute paths in `.env` if your username or home directory changed. Restoring a checkpoint without its original accounting file can stop ingestion. Resume the exporter from the existing file without truncating it, using the same stable record IDs and source identity. Do not run the old and new workers against the live integration simultaneously.
+
+The normalized-file checkpoint also stores its device/inode identity. Copying a file to a new host/filesystem can change that identity even with identical contents. Reconcile the source/checkpoint before resuming file-based ingestion; see [retention and migration](rsyslog-setup.md#retention-and-migration). The development configuration above remains on mock accounting.
 
 Once the restored configuration and files are ready:
 

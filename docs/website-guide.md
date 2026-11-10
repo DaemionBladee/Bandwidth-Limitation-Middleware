@@ -350,7 +350,7 @@ For existing installations, stop `make dev`, pull the branch update, and run `ma
 | Dashboard, PostgreSQL, policies/defaults, subscriber usage, reset/history, admin creation, workers | Implemented. |
 | Mock accounting and mock ISE | Runnable for development; results are simulations. |
 | Normalized and RADIUS JSONL accounting | Implemented; requires a real exporter producing the supported format. |
-| rsyslog reception / Cisco syslog parsing | [Ubuntu raw-capture receiver example](ise.md#collect-logs-before-the-parser-is-available) included. The accounting parser still requires real log samples; raw capture is not usage input. |
+| rsyslog reception / Cisco syslog parsing | [CachyOS and Ubuntu setup guide](rsyslog-setup.md) and raw receiver example included. The accounting parser still requires real log samples; raw capture is not usage input. |
 | Subscriber database account synchronization | Not included. Accounting discovery creates middleware identities, not subscriber credentials. |
 | Live Cisco ISE enforcement | Requires inspection of your version, enabled APIs, WLC capabilities, rules, profiles, and session readback before deployment. |
 | XML APIs, alternate authentication, session/MAC-based paths, multiple simultaneous ISE sessions | Need adapter extensions if your deployment requires them. The current live framework expects Basic authentication, JSON responses, and one normalized active-session object per subscriber. |

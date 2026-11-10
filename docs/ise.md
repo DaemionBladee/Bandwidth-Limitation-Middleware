@@ -62,27 +62,6 @@ Once the parser exists, configure `ACCOUNTING_SOURCE=radius-jsonl` and `ACCOUNTI
 
 ## Collect logs before the parser is available
 
-The [rsyslog receiver example](../deploy/rsyslog/30-bandwidth-engine.conf) captures JSON envelopes containing the original syslog message, sender IP, reported timestamp, and receipt timestamp. It allows messages up to 128 KiB; review that global rsyslog limit against your host's existing configuration. It does not interpret counters, create subscribers, or issue ANC requests. Its file is a raw capture, not the accounting adapter's input format.
+Follow the **[rsyslog installation and middleware integration guide](rsyslog-setup.md)** for the complete procedure on CachyOS and Ubuntu Server: installation, configuration directories/includes, service ownership, local tests, TCP/UDP port selection, trusted senders, firewall rules, ISE forwarding, normalized accounting, and troubleshooting.
 
-Install the receiver on the Ubuntu server:
-
-```bash
-sudo apt install rsyslog
-sudo install -d -o syslog -g syslog -m 0750 /var/log/bandwidth-engine
-sudo install -m 0644 deploy/rsyslog/30-bandwidth-engine.conf /etc/rsyslog.d/30-bandwidth-engine.conf
-sudo rsyslogd -N1
-sudo systemctl restart rsyslog
-```
-
-The example initially listens only on **127.0.0.1 TCP port 5514** and accepts the loopback sender. Test capture locally:
-
-```bash
-logger --tcp --server 127.0.0.1 --port 5514 --tag bandwidth-capture-test 'Receiver connectivity test; not an accounting measurement'
-sudo tail -n 1 /var/log/bandwidth-engine/ise-raw.jsonl
-```
-
-For actual ISE collection, edit the input's `address` to the Ubuntu server's appropriate interface address and the ruleset's sender check to the trusted ISE node address. Allow additional legitimate sending nodes explicitly if needed. Configure that same transport/port as the ISE logging target, permit only those senders through the firewall, and validate/restart rsyslog again. The TCP example has no TLS settings; use the actual deployment's supported secure transport where required. If ISE is configured for UDP, change to the corresponding `imudp` module/input and test that transport instead of assuming it matches TCP.
-
-Enable the relevant accounting logging categories and interim updates in the actual ISE/WLC setup. Verify that the received messages contain transfer counters; authentication-only logs will not establish a quota total. Preserve all message fragments and their sequence fields. Keep a representative redacted capture for the parser implementation; do not treat the local connectivity-test message as a Cisco accounting sample.
-
-Raw capture retention/rotation can be managed separately from future normalized accounting output. The latter must satisfy the adapter's append-only checkpoint rules. Keep live enforcement on mock while the required log parser, endpoint identity mapping, ANC body, and confirmation mapping remain incomplete.
+The shared [receiver example](../deploy/rsyslog/30-bandwidth-engine.conf) starts with loopback-only TCP port `5514` and Ubuntu file ownership. The guide adapts ownership for CachyOS and explains the errors encountered during its local test. Raw captures remain separate from the accounting adapter input; the Cisco accounting parser and verified ANC identity/confirmation mappings are still required.

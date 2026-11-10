@@ -6,6 +6,8 @@ Read the **[website feature and administrator guide](docs/website-guide.md)** fo
 
 Use the **[CachyOS development guide](docs/cachyos.md)** for your workstation and the **[Ubuntu Server deployment guide](docs/ubuntu-server.md)** for the deployed middleware. They include dependencies, database migration, systemd services, and HTTPS proxy configuration. The application has no Fedora-specific runtime components; neither target OS has been tested directly in this workspace.
 
+For log collection, follow the **[rsyslog installation and integration guide](docs/rsyslog-setup.md)**. It covers both operating systems from package installation through local tests, listening ports, ISE forwarding, permissions, and the accounting integration stages still required.
+
 ## Run locally
 
 Run from the existing checkout (each cloud task is already isolated; no worktree is necessary):
