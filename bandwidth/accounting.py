@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -15,6 +16,7 @@ from bandwidth.defaults import discover
 from bandwidth.engine import effective_assignment, ensure_period, evaluate, lock_user, quota_window
 from bandwidth.models import AccountingRecord, Checkpoint, Inbox, Period, PolicyVersion, User
 from bandwidth.schemas import Measurement, PolicySpec
+from bandwidth.syslog import SyslogParser, unique_object
 
 
 class AccountingSource(Protocol):
@@ -57,6 +59,44 @@ def radius_measurement(raw):
     )
 
 
+def read_jsonl(path, cursor, limit, consume, max_line=65536, strict=False):
+    """Process complete lines on the opened inode; return a transactional cursor."""
+    with Path(path).open("rb") as stream:
+        stat = os.fstat(stream.fileno())
+        identity = f"{stat.st_dev}:{stat.st_ino}"
+        if cursor and (cursor.get("identity") != identity or stat.st_size < cursor.get("offset", 0)):
+            raise ValueError(
+                "Accounting file rotated/truncated; retain the old file and reconcile checkpoint"
+            )
+        stream.seek(cursor.get("offset", 0))
+        records = []
+        for _ in range(limit):
+            position = stream.tell()
+            line = stream.readline(max_line + 1)
+            if len(line) > max_line:
+                raise ValueError(f"Accounting line exceeds {max_line} bytes")
+            if not line or not line.endswith(b"\n"):
+                stream.seek(position)
+                break
+            try:
+                raw = json.loads(line, object_pairs_hook=unique_object if strict else None)
+                record = consume(raw)
+            except UnicodeError:
+                raise ValueError(f"Invalid UTF-8 in accounting input at byte {position}") from None
+            except (ValueError, TypeError, KeyError, RecursionError) as exc:
+                if strict:
+                    detail = (
+                        str(exc)
+                        if type(exc) is ValueError
+                        else "Malformed rsyslog envelope or accounting payload"
+                    )
+                    raise ValueError(f"Rsyslog input at byte {position}: {detail}") from None
+                raise
+            if record is not None:
+                records.append(record)
+        return records, {"identity": identity, "offset": stream.tell()}, stream.tell() >= stat.st_size
+
+
 class JSONLAccounting:
     def __init__(self, path, radius=False):
         self.path = Path(path)
@@ -66,26 +106,37 @@ class JSONLAccounting:
     def fetch(self, db, cursor, limit):
         # Cursor and ingestion commit together. Refuse silent rotation/truncation;
         # an exporter should retain this file or an operator must reset the cursor.
-        with self.path.open("rb") as stream:
-            stat = self.path.stat()
-            identity = f"{stat.st_dev}:{stat.st_ino}"
-            if cursor and (cursor.get("identity") != identity or stat.st_size < cursor.get("offset", 0)):
-                raise ValueError(
-                    "Accounting file rotated/truncated; retain the old file and reconcile checkpoint"
-                )
-            stream.seek(cursor.get("offset", 0))
-            records = []
-            for _ in range(limit):
-                position = stream.tell()
-                line = stream.readline(65537)
-                if len(line) > 65536:
-                    raise ValueError("Accounting line exceeds 64 KiB")
-                if not line or not line.endswith(b"\n"):
-                    stream.seek(position)
-                    break
-                raw = json.loads(line)
-                records.append(radius_measurement(raw) if self.radius else Measurement.model_validate(raw))
-            return records, {"identity": identity, "offset": stream.tell()}
+        records, next_cursor, _ = read_jsonl(
+            self.path,
+            cursor,
+            limit,
+            radius_measurement if self.radius else Measurement.model_validate,
+        )
+        return records, next_cursor
+
+
+class RsyslogAccounting:
+    name = "rsyslog"
+
+    def __init__(self, path, allowed_senders="127.0.0.1,::1", fragment_timeout=900):
+        self.path = Path(path)
+        self.allowed_senders = allowed_senders
+        self.fragment_timeout = fragment_timeout
+
+    def fetch(self, db, cursor, limit):
+        if cursor.get("format", 1) != 1:
+            raise ValueError("Unsupported rsyslog checkpoint format")
+        parser = SyslogParser(cursor, self.allowed_senders, utcnow(), self.fragment_timeout)
+        records, next_cursor, eof = read_jsonl(
+            self.path,
+            cursor,
+            limit,
+            parser.consume,
+            max_line=1_048_576,
+            strict=True,
+        )
+        state = parser.finish(eof)
+        return records, {**next_cursor, "format": 1, **state, "pending_count": len(state["pending"])}
 
 
 def source_adapter():
@@ -94,7 +145,11 @@ def source_adapter():
         return MockAccounting()
     if config.accounting_source in ("jsonl", "radius-jsonl") and config.accounting_file:
         return JSONLAccounting(config.accounting_file, config.accounting_source == "radius-jsonl")
-    raise ValueError("Configure ACCOUNTING_SOURCE=mock, jsonl, or radius-jsonl and ACCOUNTING_FILE")
+    if config.accounting_source == "rsyslog" and config.accounting_file:
+        return RsyslogAccounting(
+            config.accounting_file, config.rsyslog_allowed_senders, config.rsyslog_fragment_timeout_seconds
+        )
+    raise ValueError("Configure ACCOUNTING_SOURCE=mock, jsonl, radius-jsonl, or rsyslog and ACCOUNTING_FILE")
 
 
 def difference(current, previous):

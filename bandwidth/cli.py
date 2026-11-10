@@ -1,12 +1,16 @@
 import argparse
 import getpass
+import json
 import os
 import re
+from pathlib import Path
 
 from dotenv import load_dotenv
 from sqlalchemy import select
 
+from bandwidth.accounting import RsyslogAccounting
 from bandwidth.auth import password_hash
+from bandwidth.config import settings
 from bandwidth.db import transaction
 from bandwidth.defaults import latest
 from bandwidth.engine import assign
@@ -74,12 +78,41 @@ def demo():
     print("Demo policy and subscriber are present (decimal GB and Mbps)")
 
 
+def check_syslog(path=None):
+    config = settings()
+    path = path or config.accounting_file
+    if not path:
+        raise SystemExit("Provide --file or configure ACCOUNTING_FILE")
+    adapter = RsyslogAccounting(path, config.rsyslog_allowed_senders, config.rsyslog_fragment_timeout_seconds)
+    target_size = Path(path).stat().st_size
+    cursor = {}
+    while True:
+        previous = cursor.get("offset", 0)
+        _, cursor = adapter.fetch(None, cursor, 250)
+        if cursor["offset"] >= target_size or cursor["offset"] == previous:
+            break
+    partial = cursor["offset"] < target_size
+    print(
+        json.dumps(
+            {**cursor["stats"], "pending_count": cursor["pending_count"], "partial_trailing_line": partial}
+        )
+    )
+    if cursor["pending_count"] or partial:
+        raise SystemExit("Capture is incomplete; retain it and wait for the remaining data")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["bootstrap", "demo"])
+    parser.add_argument("command", choices=["bootstrap", "demo", "check-syslog"])
     parser.add_argument("--username", default="admin")
+    parser.add_argument("--file", help="Raw rsyslog JSONL capture for check-syslog")
     args = parser.parse_args()
-    bootstrap(args.username) if args.command == "bootstrap" else demo()
+    if args.command == "check-syslog":
+        check_syslog(args.file)
+    elif args.command == "bootstrap":
+        bootstrap(args.username)
+    else:
+        demo()
 
 
 if __name__ == "__main__":

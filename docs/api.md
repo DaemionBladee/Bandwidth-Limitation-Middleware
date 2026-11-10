@@ -22,7 +22,7 @@ All routes below require an authenticated account cookie or `Authorization: Bear
 | GET / POST | `/api/accounts` | Admin-only list/create of website login accounts; creation defaults to User/read-only |
 | GET / PUT / DELETE | `/api/accounts/{id}` | Admin-only account read/update/delete; mutations require current password and expected revision |
 | POST | `/api/mock/accounting` | Normalized measurement; only for mock accounting |
-| GET | `/api/status` | Adapter selections, jobs, checkpoints, worker errors |
+| GET | `/api/status` | Adapter selections, jobs, checkpoints, worker errors; rsyslog checkpoints include parser counts and pending-group count |
 | GET | `/api/audit` | Latest 100 changes with before/after data |
 | GET | `/api/timezones` | Available IANA timezone names |
 | GET | `/api/dashboard?timezone=Asia/Yangon` | Consistent subscribers/policies/status/audit snapshot and seven local days of recorded traffic |
@@ -57,6 +57,8 @@ RADIUS JSONL (`ACCOUNTING_SOURCE=radius-jsonl`):
 ```
 
 The exporter supplies stable IDs, trusted attribution, timestamps, correct NAS directions, and an append-only file. There is no unauthenticated accounting ingestion endpoint. Implement the `AccountingSource` protocol for an actual SQL, HTTP, or stream source once its interface is known.
+
+For the included raw rsyslog parser, set `ACCOUNTING_SOURCE=rsyslog`, point `ACCOUNTING_FILE` to the receiver's raw JSONL capture, and configure `RSYSLOG_ALLOWED_SENDERS` (comma-separated IPs/CIDRs). The worker performs parsing and accounting in one transaction. Run `python -m bandwidth.cli check-syslog --file PATH` to preflight without database writes or ISE calls. Parser counts (`lines`, `parsed`, `ignored`, `pending_count`) are included in the rsyslog checkpoint's `parser` object; fragment payloads and complete cursors are not returned. See [supported formats, fragment limits, and setup](rsyslog-parser.md).
 
 For a RADIUS Start event, include `"Acct-Status-Type": "Start"` (numeric `1` is also accepted). Missing octet counters are treated as zero for Start only, so a first connection can create its subscriber and allowance before any transfer. Interim/Stop records require both octet counters; missing counters are rejected rather than treated as a session reset. Export subscriber Start/Interim/Stop events, not NAS-wide Accounting-On/Off messages.
 

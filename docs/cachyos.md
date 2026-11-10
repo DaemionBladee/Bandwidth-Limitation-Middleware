@@ -1,6 +1,6 @@
 # CachyOS development setup and Fedora migration
 
-Use CachyOS as your development workstation and [Ubuntu Server](ubuntu-server.md) for the deployed middleware. Each installation has its own database, credentials, and accounting configuration. Keep development on mock adapters so that local testing does not issue requests to the live ISE deployment.
+Use CachyOS as your development workstation and [Ubuntu Server](ubuntu-server.md) for the deployed middleware. Each installation has its own database, credentials, and accounting configuration. Keep development ISE enforcement on mock; parser testing can use a local accounting capture without issuing requests to the live ISE deployment.
 
 To install and test a receiver on CachyOS, follow the [rsyslog setup and integration guide](rsyslog-setup.md). It includes the configuration-directory include and root-ownership settings used by the successful local capture test.
 
@@ -119,7 +119,7 @@ Review `.env` after copying, especially the database hostname and credentials. F
 
 Restore the accounting file in full, the ISE contract, and any CA bundle. Update their absolute paths in `.env` if your username or home directory changed. Restoring a checkpoint without its original accounting file can stop ingestion. Resume the exporter from the existing file without truncating it, using the same stable record IDs and source identity. Do not run the old and new workers against the live integration simultaneously.
 
-The normalized-file checkpoint also stores its device/inode identity. Copying a file to a new host/filesystem can change that identity even with identical contents. Reconcile the source/checkpoint before resuming file-based ingestion; see [retention and migration](rsyslog-setup.md#retention-and-migration). The development configuration above remains on mock accounting.
+The file-based checkpoint also stores its device/inode identity, including when the rsyslog parser consumes the raw capture. Copying a file to a new host/filesystem can change that identity even with identical contents. Reconcile the source/checkpoint before resuming file-based ingestion; see [retention and migration](rsyslog-setup.md#retention-and-migration). The development configuration above remains on mock accounting.
 
 Once the restored configuration and files are ready:
 

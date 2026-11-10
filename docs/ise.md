@@ -29,7 +29,7 @@ The selected deployment receives logs through **rsyslog on Ubuntu Server** and u
 The intended flow is:
 
 1. The WLC/ISE accounting infrastructure sends logs to the configured rsyslog target. Select the supported transport, port, and trusted senders for the actual deployment.
-2. A parser converts the received accounting messages into the middleware's supported append-only RADIUS JSONL records. rsyslog reception alone does not perform this conversion. The current branch has no raw Cisco syslog parser.
+2. The included [rsyslog accounting parser](rsyslog-parser.md) reads the raw receiver envelopes through `ACCOUNTING_SOURCE=rsyslog`. It supports the documented CISE/RADIUS formats, sender validation, and fragment reassembly; verify the actual deployment's messages. Existing independent RADIUS JSONL exporters remain supported.
 3. The worker registers unknown accounting identities using the enabled default plan, normalizes upload/download counters, and evaluates the current allowance.
 4. At/above quota, the worker requests LIMITED and queues enforcement. The live adapter applies the verified ANC policy to the correctly resolved endpoint(s).
 5. ISE authorization rules map that ANC state to an authorization profile containing the WLC-supported speed attributes. Required reauthorization and active-session readback establish whether the intended profile is actually applied.
@@ -58,10 +58,12 @@ To complete the implementation, supply these redacted deployment details:
 - **Existing ANC policy names and authorization mappings** for NORMAL and LIMITED, including the intended reset/removal action and whether ANC triggers the required reauthorization automatically.
 - **Supported readback** that confirms the policy/profile on every relevant active endpoint/session. HTTP success or an ANC assignment alone is not proof that the WLC has applied the requested speeds.
 
-Once the parser exists, configure `ACCOUNTING_SOURCE=radius-jsonl` and `ACCOUNTING_FILE` to its normalized output, not the raw rsyslog file. Grant the service account read access and retain the processed prefix required by the checkpoint. The normalization stage must preserve stable event IDs, session uniqueness, counter direction, and any required syslog-fragment reassembly.
+For direct capture ingestion, configure `ACCOUNTING_SOURCE=rsyslog`, `ACCOUNTING_FILE` to the raw capture, and `RSYSLOG_ALLOWED_SENDERS` to the trusted nodes. Grant the service account read access and retain the append-only source required by its checkpoint. Preflight the capture and verify event/session/counter semantics using the [parser guide](rsyslog-parser.md). Use `radius-jsonl` only for a separate exporter that already writes the supported RADIUS measurement schema.
 
-## Collect logs before the parser is available
+<a id="collect-logs-before-the-parser-is-available"></a>
+
+## Capture and parser setup
 
 Follow the **[rsyslog installation and middleware integration guide](rsyslog-setup.md)** for the complete procedure on CachyOS and Ubuntu Server: installation, configuration directories/includes, service ownership, local tests, TCP/UDP port selection, trusted senders, firewall rules, ISE forwarding, normalized accounting, and troubleshooting.
 
-The shared [receiver example](../deploy/rsyslog/30-bandwidth-engine.conf) starts with loopback-only TCP port `5514` and Ubuntu file ownership. The guide adapts ownership for CachyOS and explains the errors encountered during its local test. Raw captures remain separate from the accounting adapter input; the Cisco accounting parser and verified ANC identity/confirmation mappings are still required.
+The shared [receiver example](../deploy/rsyslog/30-bandwidth-engine.conf) starts with loopback-only TCP port `5514` and Ubuntu file ownership. The guide adapts ownership/read permissions for CachyOS and Ubuntu. The included parser connects supported raw messages to accounting; verified ANC identity/confirmation mappings remain integration work. Raw captures are valid input for `rsyslog`, while the other JSONL adapters require their own documented schemas.

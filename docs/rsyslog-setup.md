@@ -2,14 +2,14 @@
 
 Use this guide for **CachyOS collection tests** and **Ubuntu Server deployment** on `codex/updated-middleware-workflow`. You can install and test the receiver before installing the middleware database or configuring any ISE credentials.
 
-The receiver captures raw logs today. The branch does **not** yet contain a Cisco syslog accounting parser: real log samples are needed to implement it. The middleware consumes normalized or RADIUS JSONL accounting records. Raw capture and quota ingestion are separate stages.
+The receiver captures raw logs, and the included **[rsyslog accounting parser](rsyslog-parser.md)** connects supported messages directly to the middleware worker. Real deployment samples are still needed to verify your ISE format and endpoint semantics. Normalized/RADIUS JSONL exporters remain supported as alternatives.
 
 ```mermaid
 flowchart LR
     I[ISE / WLC accounting logs] --> R[rsyslog receiver]
     R --> F[Raw JSONL capture]
-    F -. Parser still required .-> N[Supported accounting JSONL]
-    N --> W[Middleware worker]
+    F --> P[Included accounting parser]
+    P --> W[Middleware worker]
     W --> D[(Usage, policies, jobs)]
     W -. Verified ANC integration .-> A[Cisco ISE]
 ```
@@ -26,7 +26,7 @@ flowchart LR
 8. [Accept the real sending node](#8-accept-the-real-sending-node)
 9. [Configure firewall and ISE forwarding](#9-configure-firewall-and-ise-forwarding)
 10. [Capture the accounting samples](#10-capture-the-accounting-samples)
-11. [Connect normalized accounting to the middleware](#11-connect-normalized-accounting-to-the-middleware)
+11. [Connect accounting to the middleware](#11-connect-accounting-to-the-middleware)
 12. [Complete ANC enforcement](#12-complete-anc-enforcement)
 
 References: [troubleshooting](#troubleshooting), [retention and migration](#retention-and-migration), [verification](#verification).
@@ -210,7 +210,7 @@ Allow a moment for the receiver to write the record. Expected fields include:
 {"received_at":"2026-11-10T09:00:00+06:30","reported_at":"2026-11-10T09:00:00+06:30","source_ip":"127.0.0.1","hostname":"receiver-host","raw_message":"... bandwidth-test ... Receiver connectivity test"}
 ```
 
-This demonstrates local transport, JSON encoding, and file output. It does not demonstrate ISE accounting, subscriber creation, quota usage, or ANC enforcement. Keep `ACCOUNTING_SOURCE=mock` and `ISE_MODE=mock` while collecting initial samples.
+This demonstrates local transport, JSON encoding, and file output. It does not demonstrate ISE accounting, subscriber creation, quota usage, or ANC enforcement. Use the parser preflight before enabling accounting ingestion. Keep `ISE_MODE=mock` until ANC configuration is verified.
 
 ## 7. Choose TCP or UDP and change the port
 
@@ -326,60 +326,82 @@ Use Ctrl+C to stop following the file. A real record's `source_ip` should match 
 
 ## 10. Capture the accounting samples
 
-Capture representative Start, Interim-Update, and Stop events. Preserve the relationships between messages when redacting subscriber identifiers. The parser needs the actual field names and semantics for:
+Capture representative Start, Interim-Update, and Stop events. Preserve the relationships between messages when redacting subscriber identifiers. Verify that your records provide the supported field names and semantics for:
 
 - Subscriber username and endpoint MAC/IP, plus NAS identity.
 - Stable session/event IDs, timestamps/timezone, and any message sequence/fragment fields.
 - Upload/download octets, gigawords or other counter-width information, and accounting status.
 - Repeated/interim records and examples of fragmentation or resets when available.
 
-`received_at` is receiver time; `reported_at` comes from rsyslog's parsed header. The future parser must establish the correct accounting event time from the actual message. It must handle any Cisco message reassembly, trusted source checks, stable IDs, and NAS counter direction before emitting supported measurements.
+`received_at` is receiver time; `reported_at` comes from rsyslog's parsed header. The included parser uses explicit accounting time, the CISE payload timestamp, or an offset-aware RFC5424 header, and handles its documented CISE fragmentation format. Verify those choices, trusted origin, session identity, and counter direction against the real deployment. Unsupported formats fail with diagnostics; see the [parser reference](rsyslog-parser.md).
 
-The raw file can be read by root and the configured logging owner/group. Provide a future parser identity with explicit read access to that file/directory; the middleware only needs read access to the normalized output. Log collection does not require ISE ERS credentials or changes to website Admin/User accounts.
+The raw file can be read by root and the configured logging owner/group. When enabling direct rsyslog ingestion, grant the middleware process read-only access as described below. Log collection does not require ISE ERS credentials or changes to website Admin/User accounts.
 
-## 11. Connect normalized accounting to the middleware
+## 11. Connect accounting to the middleware
 
-**This section applies after a verified parser/exporter has been implemented and installed.** No Cisco syslog normalizer or its service unit is shipped in this branch. Keep testing the dashboard with mock accounting until then. See [middleware installation for CachyOS](cachyos.md) or [Ubuntu services](ubuntu-server.md) separately.
+The included `rsyslog` accounting source reads the capture directly; no additional parser daemon or intermediate file is required. Supported RFC5424/RFC3164, flat JSON/CSV accounting, and CISE formats are documented in the [parser reference](rsyslog-parser.md). Configure the parser only after inspecting a preflight result. A connectivity-test record is ignored and correctly produces zero quota usage.
 
-The future converter should append RADIUS JSONL records like this illustrative measurement, one complete JSON object per newline:
+### Grant read-only capture access
 
-```json
-{"record_id":"nas-a:session-42:interim-2","User-Name":"subscriber@example.com","Acct-Unique-Session-Id":"nas-a:session-42","Acct-Session-Id":"42","Event-Timestamp":1792490400,"Acct-Status-Type":"Interim-Update","Acct-Input-Octets":1000,"Acct-Output-Octets":2000,"Acct-Input-Gigawords":0,"Acct-Output-Gigawords":0}
-```
-
-This is an output schema example, not a claim that Cisco emits this raw format. For the current adapter, NAS input maps to subscriber upload and NAS output to download. Start events may omit counters, which become zero; Interim/Stop records require both octet counters. Exporters must reuse stable IDs for replays and supply unique session identities across NAS/reboots. See [all accounting formats and semantics](api.md).
-
-Choose a persistent normalized output such as `/var/lib/bandwidth-engine/accounting/radius.jsonl`. For the Ubuntu service account, create its directory after installing the middleware:
+Install ACL tools if needed: `sudo pacman -Syu --needed acl` on CachyOS, or `sudo apt install acl` on Ubuntu. The raw capture should already exist from the local test. For a CachyOS middleware running as your normal login user, run these commands in Bash:
 
 ```bash
-sudo install -d -o bandwidth -g bandwidth -m 0750 /var/lib/bandwidth-engine/accounting
+sudo setfacl -m "u:$(id -un):rx" /var/log/bandwidth-engine
+sudo setfacl -m "u:$(id -un):r" /var/log/bandwidth-engine/ise-raw.jsonl
+test -r /var/log/bandwidth-engine/ise-raw.jsonl
 ```
 
-Configure the actual normalizer to append there and give `bandwidth` read access to its output. For CachyOS `make dev`, grant the normal user running the middleware access to the chosen normalized path instead. Preserve an existing file's contents. Once output exists, check Ubuntu service access:
+For the installed Ubuntu service account:
 
 ```bash
-sudo -u bandwidth test -r /var/lib/bandwidth-engine/accounting/radius.jsonl
+sudo setfacl -m u:bandwidth:rx /var/log/bandwidth-engine
+sudo setfacl -m u:bandwidth:r /var/log/bandwidth-engine/ise-raw.jsonl
+sudo -u bandwidth test -r /var/log/bandwidth-engine/ise-raw.jsonl
 ```
 
-Set the middleware's own `.env`:
+These ACLs grant access to the capture directory/file, not all system logs. Reapply appropriate access if an operator deliberately replaces the source during reconciliation. The service account does not need permission to modify the capture or to run as root.
+
+### Configure and preflight
+
+Set the middleware's untracked `.env`:
 
 ```dotenv
-ACCOUNTING_SOURCE=radius-jsonl
-ACCOUNTING_FILE=/var/lib/bandwidth-engine/accounting/radius.jsonl
+ACCOUNTING_SOURCE=rsyslog
+ACCOUNTING_FILE=/var/log/bandwidth-engine/ise-raw.jsonl
+RSYSLOG_ALLOWED_SENDERS=127.0.0.1,::1
+RSYSLOG_FRAGMENT_TIMEOUT_SECONDS=900
 ISE_MODE=mock
 ```
 
-Use an actual path readable by the API/worker. **Do not set `ACCOUNTING_FILE` to the raw `ise-raw.jsonl` capture.** The raw JSON envelope is a different schema. A normalized-source converter can alternatively use `ACCOUNTING_SOURCE=jsonl` with the documented normalized measurement format.
+For real logs, replace `RSYSLOG_ALLOWED_SENDERS` with the actual ISE sender IPs/CIDRs, matching the receiver/network allowlist. The settings above are for the local test. The parser uses the receiver's raw envelope schema only when `ACCOUNTING_SOURCE=rsyslog`; do not use that file with `jsonl` or `radius-jsonl`.
 
-On Ubuntu, restart both processes to reload their settings:
+From the repository on CachyOS:
+
+```bash
+uv run --frozen python -m bandwidth.cli check-syslog --file /var/log/bandwidth-engine/ise-raw.jsonl
+```
+
+From `/opt/bandwidth-engine` on Ubuntu:
+
+```bash
+sudo -u bandwidth .venv/bin/python -m bandwidth.cli check-syslog --file /var/log/bandwidth-engine/ise-raw.jsonl
+```
+
+Preflight prints line/parsed/ignored/pending counts without writing database records or calling ISE. It reports incomplete fragments/partial lines rather than pretending they are accounting. The [synthetic fixture](../tests/fixtures/rsyslog/README.md) can demonstrate parsing before real logs arrive.
+
+### Start ingestion
+
+Select an enabled **default quota plan** before discovering unknown usernames. On CachyOS, stop the existing `make dev` session and run `make dev` again. On Ubuntu, restart both processes:
 
 ```bash
 sudo systemctl restart bandwidth-api.service bandwidth-worker.service
 ```
 
-On CachyOS, stop the existing `make dev` session and run `make dev` again. Select an enabled **default quota plan** in the dashboard before discovering unknown usernames. Existing subscribers retain their assignments and usage; reconnects do not grant a new allowance.
+The existing worker now parses and ingests complete accounting messages. Fragment state, file checkpoint, usage, subscriber discovery, and enforcement jobs commit together. Existing subscribers retain their assignments and usage; reconnects do not grant a new allowance. Duplicate events do not increase quota usage. Retain the active capture append-only; see the source/checkpoint rules below.
 
-Verify accounting checkpoint progress, usage increases from new records, duplicate-event handling, automatic first registration, and worker errors in the dashboard. A captured file alone does not show that ingestion has succeeded. With `ISE_MODE=mock`, resulting enforcement confirmations remain simulations.
+Check checkpoint/parser counts through authenticated `/api/status` or dashboard snapshot responses, and inspect worker errors. The dashboard shows newly discovered subscribers and their measured usage. A file containing only receiver test messages produces no subscribers. With `ISE_MODE=mock`, enforcement confirmations remain simulations.
+
+For an existing independent exporter, `ACCOUNTING_SOURCE=radius-jsonl` or `jsonl` remains available. Point those adapters at their own supported measurement file instead; see [accounting formats](api.md). Avoid changing between adapters/replaying the same feed into an existing ledger without reconciling source identity and deduplication scope.
 
 ## 12. Complete ANC enforcement
 
@@ -410,7 +432,7 @@ Only then select live mode and restart both application processes. An ANC HTTP s
 | `Address already in use` | Inspect `ss` for the chosen port, check duplicate listeners, or choose an available port and update sender/firewall together. |
 | Plain TCP warning on rsyslog 8.2610 | Inspect the validation exit result and separate warnings from fatal errors. TLS requires driver/certificate/peer configuration on both ends. |
 | Local test works, ISE sends nothing | Check LAN binding, actual sending node IP/filter, matching protocol/port, ISE category/target assignment, and host/network firewall. |
-| Raw file grows, dashboard has no real usage | Accounting parser/exporter is still required. Check the normalized path/format and worker only after that stage exists. |
+| Raw file grows, dashboard has no real usage | Enable `ACCOUNTING_SOURCE=rsyslog`, check sender allowlist/read permissions and preflight counts, then restart API/worker. Connectivity/authentication-only logs are ignored. |
 | Normalized accounting user is unknown | Register it or configure an enabled default quota plan. The batch/checkpoint remains blocked on errors. |
 | Future accounting timestamp error | Verify event-time parsing, timezone, and clock synchronization; do not replace event time with ingestion time. |
 | Accounting file rotated/truncated | Follow the checkpoint rules below; preserve data and stop/reconcile the ingestion source before resuming. |
@@ -428,9 +450,9 @@ sudo ss -lnup 'sport = :5514'
 
 ## Retention and migration
 
-Manage raw syslog retention/rotation separately from normalized accounting. Preserve the captured messages needed for parser development and later reconciliation. Use the host's approved rotation procedure and verify rsyslog reopens its raw output.
+The active file consumed by any accounting adapter must satisfy its append-only checkpoint rules. With `ACCOUNTING_SOURCE=rsyslog`, that is the raw capture itself. Preserve it and its incomplete fragments while the worker reads it; do not add ordinary log rotation/replacement without controlled source reconciliation.
 
-The current accounting adapter requires the **normalized file to remain append-only** and stores its device/inode identity plus byte offset in PostgreSQL. Truncation or replacement is rejected. Moving/copying that file to a new host/filesystem can change its identity even when its bytes are identical. Restoring the database checkpoint and copying the full file alone is therefore not enough to guarantee ingestion resumes.
+The current accounting adapters require their **active input file to remain append-only** and stores its device/inode identity plus byte offset in PostgreSQL. Truncation or replacement is rejected. Moving/copying that file to a new host/filesystem can change its identity even when its bytes are identical. Restoring the database checkpoint and copying the full file alone is therefore not enough to guarantee ingestion resumes.
 
 For a migration, stop ingestion and take matched database/file backups. Keep the full processed prefix and stable record IDs. Resume only after an operator has reconciled the restored source identity/cursor through a controlled migration procedure or an adapter extension. There is no checkpoint-rebinding CLI in this branch. Do not clear checkpoints or delete accounting history to bypass the error.
 
@@ -442,4 +464,4 @@ The documented receiver configurations were exercised in an isolated Ubuntu 24.0
 
 The reported CachyOS 8.2610 local TCP test succeeded after changing ownership to root. The root-mode container checks use Ubuntu's rsyslog build; CachyOS package installation and its complete host environment were not reproduced in the cloud workspace.
 
-No actual ISE accounting capture or live ANC enforcement has been verified. Completion of the parser, endpoint mapping, and live contract depends on real deployment samples and capabilities. For application regression checks, see the [repository verification instructions](../README.md#verification).
+The parser is implemented and exercised with synthetic fixtures; actual ISE accounting format compatibility and live ANC enforcement have not been verified. Endpoint mapping and the live contract still depend on real deployment samples and capabilities. For application regression checks, see the [repository verification instructions](../README.md#verification).

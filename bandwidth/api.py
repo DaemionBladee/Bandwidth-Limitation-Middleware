@@ -597,7 +597,21 @@ def status_view(db):
             )
         ],
         "checkpoints": [
-            {"source": c.source, "updated_at": c.updated_at} for c in db.scalars(select(Checkpoint))
+            {
+                "source": c.source,
+                "updated_at": c.updated_at,
+                **(
+                    {
+                        "parser": {
+                            **c.cursor.get("stats", {}),
+                            "pending_count": c.cursor.get("pending_count", 0),
+                        }
+                    }
+                    if c.source == "rsyslog"
+                    else {}
+                ),
+            }
+            for c in db.scalars(select(Checkpoint))
         ],
         "worker_errors": [
             {"kind": j.kind, "error": j.last_error, "attempts": j.attempts}

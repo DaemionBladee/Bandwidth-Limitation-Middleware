@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     admin_api_token: str = ""
     accounting_source: str = "mock"
     accounting_file: str = ""
+    rsyslog_allowed_senders: str = "127.0.0.1,::1"
+    rsyslog_fragment_timeout_seconds: int = Field(default=900, ge=1, le=86400)
     ise_mode: str = "mock"
     ise_base_url: str = ""
     ise_username: str = ""

@@ -107,7 +107,7 @@ sudo -u bandwidth .venv/bin/alembic upgrade head
 
 Keep the server's database password, HTTPS setting, and paths when transferring application-specific configuration. Restore the complete accounting file and ISE contract/CA bundle before starting the worker. Sign in with the restored account credentials; another bootstrap is unnecessary. Never restore development data over an existing live database as part of a code update.
 
-For file-based accounting, copying the normalized file can change the device/inode identity stored in its database checkpoint. Reconcile that source identity/cursor before starting ingestion on the restored host; see [retention and migration](rsyslog-setup.md#retention-and-migration). Keeping the full file is necessary but does not by itself rebind its checkpoint.
+For file-based accounting, copying the active input file (including a directly consumed raw rsyslog capture) can change the device/inode identity stored in its database checkpoint. Reconcile that source identity/cursor before starting ingestion on the restored host; see [retention and migration](rsyslog-setup.md#retention-and-migration). Keeping the full file is necessary but does not by itself rebind its checkpoint.
 
 ## Configure HTTPS
 
@@ -172,11 +172,11 @@ sudo docker compose -f compose.yaml -f deploy/compose.ubuntu.yaml logs --tail 10
 ## Connect the real accounting and ISE workflow
 
 1. Select or create an enabled default quota plan in the dashboard.
-2. Configure a trusted WLC/RADIUS accounting exporter producing the supported [RADIUS JSONL format](api.md), with stable record IDs and the original append-only file retained. Set the server's accounting adapter/file, then restart both application services.
+2. Configure the rsyslog receiver and included [accounting parser](rsyslog-parser.md), or an existing exporter producing the supported [RADIUS JSONL format](api.md). Validate trusted source, event/session/counter fields, read permissions, and the append-only file. Set the server's accounting adapter/file, then restart both application services.
 3. Inspect the real ISE version/patch, API capabilities, active-session readback, WLC speed enforcement, and existing authorization profiles. Complete the reviewed [ISE deployment contract](ise.md) before setting `ISE_MODE=live`.
 4. Restart both application services after configuration changes. Verify new subscriber discovery, quota decisions, desired versus confirmed state, and actual client-session/profile readback using an authorized test identity.
 
-For the selected rsyslog/ANC deployment, follow the [rsyslog installation and integration guide](rsyslog-setup.md) from Ubuntu package installation through receiver tests, ISE forwarding, and normalized accounting. The [ANC setup notes](ise.md#planned-rsyslog-input-and-anc-enforcement) document the operator-supplied `PUT /ers/config/ancendpoint/apply` route; its actual body, endpoint identity mapping, policy mappings, and active-session readback still require verification.
+For the selected rsyslog/ANC deployment, follow the [rsyslog installation and integration guide](rsyslog-setup.md) from Ubuntu package installation through receiver tests, ISE forwarding, read-only capture ACLs, parser preflight, and direct accounting ingestion. The [ANC setup notes](ise.md#planned-rsyslog-input-and-anc-enforcement) document the operator-supplied `PUT /ers/config/ancendpoint/apply` route; its actual body, endpoint identity mapping, policy mappings, and active-session readback still require verification.
 
 Unknown usernames in trusted accounting are registered and receive the enabled default automatically. The middleware does not provision subscriber passwords, read your separate subscriber-credential database, or receive raw syslog by itself. A successful mock response or HTTP acknowledgement is not live enforcement. The actual ISE/WLC details are still required to complete that integration.
 

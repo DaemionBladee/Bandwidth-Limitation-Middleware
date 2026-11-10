@@ -8,6 +8,7 @@ os.environ["DATABASE_URL"] = os.environ.get(
 os.environ["COOKIE_SECURE"] = "false"
 os.environ["ISE_MODE"] = "mock"
 os.environ["ACCOUNTING_SOURCE"] = "mock"
+os.environ["RSYSLOG_ALLOWED_SENDERS"] = "127.0.0.1,::1"
 os.environ["ADMIN_API_TOKEN"] = "test-automation-token"
 
 import psycopg  # noqa: E402
