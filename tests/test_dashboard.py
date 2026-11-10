@@ -513,7 +513,15 @@ def test_dashboard_full_workflow(tmp_path):
                 expect(viewer.locator("#login-view")).to_be_visible(timeout=15000)
                 viewer.get_by_label("Sign-in username", exact=True).fill("viewer-user")
                 viewer.get_by_label("Password", exact=True).fill("viewer-user-passphrase")
-                viewer.get_by_role("button", name="Sign in", exact=True).click()
+                # A new session must load its snapshot before exposing actions.
+                held_snapshots = []
+                viewer.route("**/api/dashboard?*", lambda route: held_snapshots.append(route), times=1)
+                with viewer.expect_request("**/api/dashboard?*"):
+                    viewer.get_by_role("button", name="Sign in", exact=True).click()
+                expect(viewer.locator('#login-form button[type="submit"]')).to_be_disabled()
+                expect(viewer.locator("#app-view")).not_to_be_visible()
+                assert len(held_snapshots) == 1
+                held_snapshots[0].continue_()
                 expect(viewer.locator("#new-user")).to_be_visible()
                 expect(viewer.locator("#new-policy")).not_to_be_visible()
                 viewer.get_by_role("button", name="Add subscriber", exact=True).click()

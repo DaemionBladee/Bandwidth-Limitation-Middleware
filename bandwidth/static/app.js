@@ -207,11 +207,12 @@ async function enterApp() {
   const session = await api('/session'); csrf = session.csrf || ''; loggedIn = true;
   accountAccess = session; applyAccess();
   setText('#admin-name', session.username); setText('#admin-avatar', initials(session.username));
-  $('#login-view').hidden = true; $('#app-view').hidden = false; $('#loading-state').hidden = Boolean(snapshot);
+  $('#loading-state').hidden = Boolean(snapshot);
   const [zones] = await Promise.all([api('/timezones'), syncSnapshot()]);
   timezones = zones.filter(supportedZone); if (!timezones.includes(displayZone)) displayZone = 'UTC';
   populateZoneSelect($('#display-timezone'), '', displayZone);
-  setTab(location.hash.slice(1) || 'overview', false); updateClock(); connectStream();
+  setTab(location.hash.slice(1) || 'overview', false); updateClock();
+  $('#login-view').hidden = true; $('#app-view').hidden = false; connectStream();
 }
 function setTab(tab, push = true) {
   if (!['overview', 'subscribers', 'policies', 'audit', 'admins'].includes(tab)) tab = 'overview';
